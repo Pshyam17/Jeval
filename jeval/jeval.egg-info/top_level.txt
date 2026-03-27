@@ -1,0 +1,11 @@
+artifacts
+compress
+compression
+data
+encoders
+epe
+eval
+evaluation
+experiments
+ingest
+strata

@@ -1,0 +1,17 @@
+numpy>=1.26
+transformers>=4.35
+sentence-transformers>=2.2
+torch>=2.1
+scikit-learn>=1.3
+accelerate>=0.24
+pyyaml>=6.0
+typer>=0.10
+python-dotenv>=1.0
+loguru>=0.7
+
+[dev]
+black
+ruff
+isort
+mypy
+pre-commit

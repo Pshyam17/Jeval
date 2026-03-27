@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: jeval
+Version: 0.1.0
+Summary: JEPA-based semantic fidelity compressor for agent memory
+Author-email: Preethi <you@example.com>
+License: MIT
+Project-URL: Homepage, https://github.com/your-org/jeval
+Project-URL: Repository, https://github.com/your-org/jeval
+Project-URL: Documentation, https://github.com/your-org/jeval#readme
+Keywords: semantic compression,agent memory,EPE,JEPA,nlp,transformers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: transformers>=4.35
+Requires-Dist: sentence-transformers>=2.2
+Requires-Dist: torch>=2.1
+Requires-Dist: scikit-learn>=1.3
+Requires-Dist: accelerate>=0.24
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: typer>=0.10
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: loguru>=0.7
+Provides-Extra: dev
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: isort; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+Requires-Dist: pre-commit; extra == "dev"
+
+## Model-agnostic context aware JEPA compressor 
