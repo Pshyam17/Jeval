@@ -1,4 +1,6 @@
 artifacts
+baselines
+benchmarks
 compress
 compression
 data
@@ -9,3 +11,4 @@ evaluation
 experiments
 ingest
 strata
+train

@@ -45,7 +45,7 @@ class ContentClassifier:
         pairs = [(text, hyp) for hyp in _HYPOTHESES]
         raw_scores = self._model.predict(pairs, apply_softmax=True)
 
-        return {key: float(np.asarray(score).item()) for key, score in zip(_KEYS, raw_scores)}
+        return {key: float(np.asscalar(score)) for key, score in zip(_KEYS, raw_scores)}
 
     def top_label(self, text: str) -> str:
         """Return the short key with highest confidence: FACTUAL | CAUSAL | ... | BACKGROUND"""
