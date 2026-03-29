@@ -59,7 +59,7 @@ class EPEComputer:
         arr = np.asarray(values, dtype=np.float64)
         mean = float(np.mean(arr))
         std = float(np.std(arr, ddof=0))
-        if std == 0:
+        if std < 1e-9:
             # Avoid division by zero in uniform EPE session.
             return [0.0 for _ in values]
 

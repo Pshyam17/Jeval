@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from typing import List, Mapping
+import numpy as np
+from typing import Mapping
 
 try:
-    import numpy as np
     from sentence_transformers import CrossEncoder
-except ImportError:  # pragma: no cover
-    CrossEncoder = None  # type: ignore[assignment]
+except ImportError:
+    CrossEncoder = None
 
 FAST_MODEL = "cross-encoder/nli-MiniLM2-L6-H768"
 PROD_MODEL = "cross-encoder/nli-deberta-v3-large"
 
-# Short keys used throughout budget.py and adaptive.py.
-# Hypotheses are full descriptive strings — this is what drives NLI confidence.
-# Keys are what get stored in SegmentPlan.content_type.
 _LABEL_MAP = {
     "FACTUAL":     "is a specific technical fact, file path, error code, or API endpoint",
     "CAUSAL":      "describes causation or reasoning such as because, leads to, or therefore",
@@ -23,13 +20,11 @@ _LABEL_MAP = {
     "BACKGROUND":  "is background context, ambient status, or a casual pleasantry with no technical content",
 }
 
-_KEYS   = list(_LABEL_MAP.keys())
+_KEYS       = list(_LABEL_MAP.keys())
 _HYPOTHESES = list(_LABEL_MAP.values())
 
 
 class ContentClassifier:
-    """Zero-shot NLI content type classifier. Returns short type keys (FACTUAL, CAUSAL, ...)."""
-
     def __init__(self, model_name: str = FAST_MODEL):
         self.model_name = model_name
         if CrossEncoder is None:
@@ -37,17 +32,23 @@ class ContentClassifier:
         self._model = CrossEncoder(model_name)
 
     def classify(self, text: str) -> Mapping[str, float]:
-        """Return {short_key: confidence} for all content types."""
         if not text:
             raise ValueError("ContentClassifier.classify requires non-empty text")
 
-        # predict expects list of (text, hypothesis) pairs
         pairs = [(text, hyp) for hyp in _HYPOTHESES]
+        # raw_scores shape: (n_pairs, 3) — columns are [contradiction, neutral, entailment]
         raw_scores = self._model.predict(pairs, apply_softmax=True)
+        raw_scores = np.asarray(raw_scores)
 
-        return {key: float(np.asarray(score).item()) for key, score in zip(_KEYS, raw_scores)}
+        if raw_scores.ndim == 2:
+            # NLI model: take entailment column (index 2)
+            entailment_scores = raw_scores[:, 2]
+        else:
+            # Single-label model: scores already 1D
+            entailment_scores = raw_scores
+
+        return {key: float(score) for key, score in zip(_KEYS, entailment_scores)}
 
     def top_label(self, text: str) -> str:
-        """Return the short key with highest confidence: FACTUAL | CAUSAL | ... | BACKGROUND"""
         scores = self.classify(text)
         return max(scores, key=scores.get)
