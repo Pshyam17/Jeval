@@ -2,9 +2,11 @@ from __future__ import annotations
 
 try:
     import torch
+    import torch.nn.functional as F
     from torch import nn
 except ImportError:  # pragma: no cover
     torch = None  # type: ignore[assignment]
+    F = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
 
 
@@ -50,7 +52,7 @@ if torch is not None and nn is not None:
             x = self.output_proj(x)
             if x.shape[1] == 1:
                 x = x.squeeze(1)
-            return x
+            return F.normalize(x, dim=-1)
 else:
     class PreLNTransformerPredictor:
         def __init__(self, *args, **kwargs):

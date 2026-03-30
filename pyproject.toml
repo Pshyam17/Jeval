@@ -43,7 +43,7 @@ dependencies = [
 dev = ["black", "ruff", "isort", "mypy", "pre-commit"]
 
 [tool.setuptools.packages.find]
-where = ["jeval"]
+where = ["."]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]
