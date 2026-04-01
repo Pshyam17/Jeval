@@ -155,8 +155,8 @@ MIT License - see LICENSE file for details.
 ```bibtex
 @software{jeval2024,
   title={JEval: JEPA-based Agent Memory Compression},
-  author={Your Name},
-  year={2024},
+  author={Preethi Shyam},
+  year={2025},
   url={https://github.com/yourorg/jeval}
 }
 ``` 
