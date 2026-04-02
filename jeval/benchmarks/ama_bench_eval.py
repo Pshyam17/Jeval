@@ -28,6 +28,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from openai import OpenAI
 
 from jeval.compress.adaptive import AdaptiveCompressor
@@ -136,6 +138,7 @@ class JevalMemory:
             backend=backend or ExtractiveBackend(),
         )
         self._segments: List[str] = []
+        self._segment_embeddings: Optional[np.ndarray] = None
         self._compressed: str = ""
         self._token_reduction: float = 0.0
 
@@ -174,12 +177,32 @@ class JevalMemory:
                 result.compressed_text.split("\n")
             )
         ] if result.report else [result.compressed_text]
+
+        if self._segments:
+            try:
+                self._segment_embeddings = self.encoder.encode(self._segments)
+            except Exception:
+                self._segment_embeddings = None
+        else:
+            self._segment_embeddings = None
+
         return self
 
     def memory_retrieve(self, question: str, top_k: int = 8) -> str:
         """Retrieve top-K relevant segments for a question."""
         if not self._compressed:
             return ""
+
+        if self._segment_embeddings is not None and self._segments:
+            try:
+                query_emb = self.encoder.encode([question])[0]
+                similarities = self._segment_embeddings @ query_emb
+                top_indices = list(np.argsort(similarities)[::-1][:top_k])
+                top = [self._segments[i] for i in top_indices if self._segments[i].strip()]
+                if top:
+                    return "\n".join(top)
+            except Exception:
+                pass
 
         lines = [l for l in self._compressed.split("\n") if l.strip()]
         if not lines:
