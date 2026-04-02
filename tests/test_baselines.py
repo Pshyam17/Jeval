@@ -2,6 +2,8 @@ import pytest
 from jeval.baselines.factory import BaselineFactory
 from jeval.baselines.truncation import TruncationCompressor
 from jeval.baselines.simple_mem import SimpleMemCompressor
+from jeval.compress.adaptive import AdaptiveCompressor
+from jeval.compress.extractive import ExtractiveBackend
 
 
 def test_baseline_factory():
@@ -68,3 +70,21 @@ def test_llm_lingua_compressor_fallback():
     result = compressor.compress(text, 0.5)
     assert len(result) == len(text) // 2
     assert compressor.name() == "llm-lingua"
+
+
+def test_adaptive_compressor_none_predictor_is_identity():
+    """AdaptiveCompressor should leave predictor unset when predictor=None."""
+
+    class DummyEncoder:
+        def dim(self):
+            return 16
+
+        def encode(self, texts):
+            return [[0.0] * self.dim() for _ in texts]
+
+    compressor = AdaptiveCompressor(
+        encoder=DummyEncoder(),
+        predictor=None,
+        backend=ExtractiveBackend(),
+    )
+    assert compressor.predictor is None

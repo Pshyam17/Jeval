@@ -43,7 +43,7 @@ class AdaptiveCompressor:
         artifact_index: Optional[ArtifactIndex] = None,
     ):
         self.encoder = encoder or FrozenEncoder()
-        self.predictor = predictor or PreLNTransformerPredictor(self.encoder.dim())
+        self.predictor = predictor
         self.classifier = classifer or ContentClassifier()
         self.backend = backend or LLMBackend()
         self.artifact_index = artifact_index or ArtifactIndex()

@@ -32,6 +32,9 @@ from openai import OpenAI
 
 from jeval.compress.adaptive import AdaptiveCompressor
 from jeval.compress.extractive import ExtractiveBackend
+from jeval.compress.llm import LLMBackend
+from jeval.encoders.predictor_head import PreLNTransformerPredictor
+from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.ingest.base import Segment, Session
 
 _MODEL   = "mistralai/mistral-small-3.1-24b-instruct-2503"
@@ -119,10 +122,18 @@ class JevalMemory:
         No embedding lookup — keeps retrieval deterministic and fast.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        predictor: Optional[PreLNTransformerPredictor] = None,
+        backend: Optional[object] = None,
+        encoder: Optional[FrozenEncoder] = None,
+    ):
+        self.encoder = encoder or FrozenEncoder()
+        self.predictor = predictor
         self.compressor = AdaptiveCompressor(
-            predictor=None,
-            backend=ExtractiveBackend(),
+            encoder=self.encoder,
+            predictor=self.predictor,
+            backend=backend or ExtractiveBackend(),
         )
         self._segments: List[str] = []
         self._compressed: str = ""
@@ -205,7 +216,29 @@ class JevalMemory:
         return self._compressed
 
 
-# ── Answer generation ─────────────────────────────────────────────────────────
+def load_predictor(path: str, encoder: FrozenEncoder) -> PreLNTransformerPredictor:
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("Torch is required to load a trained predictor") from exc
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Predictor checkpoint not found: {path}")
+
+    predictor = PreLNTransformerPredictor(encoder.dim())
+    predictor.load_state_dict(torch.load(path, map_location="cpu"))
+    predictor.eval()
+    return predictor
+
+
+def make_backend(name: str):
+    normalized = name.lower().strip()
+    if normalized == "extractive":
+        return ExtractiveBackend()
+    if normalized == "llm":
+        return LLMBackend()
+    raise ValueError(f"Unknown backend: {name}")
+
 
 ANSWER_PROMPT = """\
 You are an expert assistant answering questions about an AI agent's trajectory.
@@ -283,10 +316,20 @@ class EpisodeResult:
     qa_results: List[dict] = field(default_factory=list)
 
 
-def run_eval(domain: str = "SOFTWARE", max_episodes: int = 10, run_baseline: bool = True):
+def run_eval(
+    domain: str = "SOFTWARE",
+    max_episodes: int = 10,
+    run_baseline: bool = True,
+    predictor_path: Optional[str] = None,
+    backend_name: str = "extractive",
+    encoder_model: str = "all-mpnet-base-v2",
+):
     from datasets import load_dataset
 
     client = _client()
+    backend = make_backend(backend_name)
+    encoder = FrozenEncoder(model_name=encoder_model)
+    predictor = load_predictor(predictor_path, encoder) if predictor_path else None
     ds = load_dataset("AMA-bench/AMA-bench", split="test")
 
     # Filter by domain
@@ -326,7 +369,7 @@ def run_eval(domain: str = "SOFTWARE", max_episodes: int = 10, run_baseline: boo
         traj_text = "\n".join(traj_lines)
 
         # jeval memory construction
-        mem = JevalMemory()
+        mem = JevalMemory(predictor=predictor, backend=backend, encoder=encoder)
         mem.memory_construction(traj_text, task=task)
         print(f"  jeval compression: {mem.token_reduction:.0%} reduction  ({len(traj_text.split())} → {len(mem.full_memory.split())} tokens)")
 
@@ -443,10 +486,21 @@ if __name__ == "__main__":
                         choices=_DOMAINS + ["all"])
     parser.add_argument("--max-episodes", type=int, default=10)
     parser.add_argument("--no-baseline",  action="store_true")
+    default_predictor = "predictor_best.pt" if os.path.exists("predictor_best.pt") else None
+    parser.add_argument("--predictor",    type=str, default=default_predictor,
+                        help="Path to a saved predictor checkpoint to use for adaptive compression")
+    parser.add_argument("--backend",      type=str, default="extractive",
+                        choices=["extractive", "llm"],
+                        help="Compression backend to use for jeval")
+    parser.add_argument("--encoder-model", type=str, default="all-mpnet-base-v2",
+                        help="SentenceTransformer model name for encoder embeddings")
     args = parser.parse_args()
 
     run_eval(
         domain=args.domain,
         max_episodes=args.max_episodes,
         run_baseline=not args.no_baseline,
+        predictor_path=args.predictor,
+        backend_name=args.backend,
+        encoder_model=args.encoder_model,
     )
