@@ -1,0 +1,47 @@
+#!/bin/bash
+#SBATCH --job-name=jeval-ama
+#SBATCH --account=cs6140.202630
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --array=0-207%50
+# --partition and --gres injected by smart_submit.sh at submission time
+#SBATCH --output=logs/ama_%A_%a.out
+#SBATCH --error=logs/ama_%A_%a.err
+
+set -e
+IDX=$SLURM_ARRAY_TASK_ID
+OUT="benchmarks/results/ama_bench_episodes/episode_${IDX}.json"
+
+# Safe resubmission: skip completed episodes without re-running NIM queries
+if [ -f "$OUT" ] && python3.12 -c "
+import json, sys
+d = json.load(open('$OUT'))
+sys.exit(0 if 'score' in d else 1)
+" 2>/dev/null; then
+    echo "episode $IDX already complete — skipping"
+    exit 0
+fi
+
+WORKDIR="$HOME/jeval/Jeval-1"
+cd "$WORKDIR"
+
+module purge
+module load miniconda3/24.11.1
+source activate jeval
+
+export PYTHONPATH="$WORKDIR:$PYTHONPATH"
+export TOKENIZERS_PARALLELISM=false
+
+echo "=== episode $IDX  node=$SLURMD_NODENAME  start=$(date) ==="
+
+python3.12 benchmarks/run_ama_episode.py \
+    --episode-idx "$IDX" \
+    --dataset     liir-kuleuven/AMA-Bench \
+    --split       SOFTWARE \
+    --predictor   checkpoints/predictor_v2_best.pt \
+    --out         "$OUT"
+
+echo "=== episode $IDX done: $(date) ==="

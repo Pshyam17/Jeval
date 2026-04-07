@@ -118,6 +118,31 @@ def generate_pairs_from_ama_bench(
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
 
+class PairDataset(Dataset):
+    """
+    General-purpose dataset for (anchor, target, label) pairs.
+    Returns dicts with anchor_emb, target_emb, pred_emb (from predictor), label.
+    """
+
+    def __init__(self, pairs: List[Tuple[str, str, int]], encoder, predictor):
+        self.items = []
+        for anchor, target, label in pairs:
+            anchor_emb = encoder.encode(anchor)
+            target_emb = encoder.encode(target)
+            pred_emb   = predictor(anchor_emb).squeeze()
+            self.items.append({
+                "anchor_emb": anchor_emb,
+                "target_emb": target_emb,
+                "pred_emb":   pred_emb,
+                "label":      label,
+            })
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, idx: int):
+        return self.items[idx]
+
 class ReconstructionDataset(Dataset):
     """MSE training: (enc(compressed), enc(original)) pairs."""
 

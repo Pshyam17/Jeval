@@ -23,7 +23,7 @@ class PairGenerator:
             emb = self.encoder.encode(seg.text)
             embeddings.append((seg.text, emb))
 
-        for _ in range(num_pairs):
+        for _ in range(num_pairs // 2):
             # Positive pair: similar segments
             anchor_idx = random.randint(0, len(embeddings) - 1)
             anchor_text, anchor_emb = embeddings[anchor_idx]

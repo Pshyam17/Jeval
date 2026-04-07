@@ -18,14 +18,16 @@ _TYPE_FLOOR = {
     "BACKGROUND":  0.20,
 }
 
-# Per-type EPE sensitivity — how much z-score shifts the budget
+# Per-type EPE sensitivity — how much z-score shifts the budget.
+# BACKGROUND uses a large sensitivity so that high-EPE turns still get preserved
+# (predictor says something was lost) while low-EPE turns clip to min_budget.
 _TYPE_SENSITIVITY = {
-    "FACTUAL":     0.15,   # small shift — facts are facts regardless of EPE
-    "CAUSAL":      0.20,   # medium shift — reasoning chains matter
+    "FACTUAL":     0.15,
+    "CAUSAL":      0.20,
     "ENTITY":      0.15,
     "TEMPORAL":    0.20,
     "CONTRASTIVE": 0.20,
-    "BACKGROUND":  0.30,   # large shift — background can be aggressively compressed
+    "BACKGROUND":  1.50,
 }
 
 
@@ -54,7 +56,7 @@ class BudgetAllocator:
     - Unknown type       → falls back to BACKGROUND floor with BACKGROUND sensitivity
     """
 
-    def __init__(self, min_budget: float = 0.10, max_budget: float = 1.0):
+    def __init__(self, min_budget: float = 0.30, max_budget: float = 1.0):
         self.min_budget = min_budget
         self.max_budget = max_budget
 

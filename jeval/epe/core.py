@@ -57,10 +57,6 @@ class EPEComputer:
             return []
 
         arr = np.asarray(values, dtype=np.float64)
-        mean = float(np.mean(arr))
-        std = float(np.std(arr, ddof=0))
-        if std < 1e-9:
-            # Avoid division by zero in uniform EPE session.
-            return [0.0 for _ in values]
-
+        mean = float(arr.mean())
+        std = max(float(arr.std(ddof=0)), 1e-9)
         return [(float(v) - mean) / std for v in values]
