@@ -65,8 +65,8 @@ pick_best() {
 BEST=$(pick_best)
 IFS='|' read -r PART GRES LABEL <<< "$BEST"
 
-echo "[smart_submit] gpu: $LABEL  partition=$PART  gres=$GRES"
-echo "[smart_submit] → sbatch ${SBATCH_PASSTHROUGH[*]:-} --partition=$PART --gres=$GRES $TARGET ${EXTRA[*]:-}"
+echo "[smart_submit] gpu: $LABEL  partition=$PART  gres=$GRES" >&2
+echo "[smart_submit] → sbatch ${SBATCH_PASSTHROUGH[*]:-} --partition=$PART --gres=$GRES $TARGET ${EXTRA[*]:-}" >&2
 
 sbatch --account=cs6140.202630 \
        --partition="$PART" \
