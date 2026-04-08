@@ -25,11 +25,11 @@ fi
 TIERS=(
     "gpu|gpu:h200:1|h200|H200-idle"
     "gpu|gpu:a100:1|a100|A100-idle"
-    "multigpu|gpu:a100:1|a100|A100-multigpu-idle"
     "gpu-short|gpu:a100:1|a100|A100-short-idle"
     "gpu|gpu:v100:1|v100|V100-idle"
     "gpu|gpu:h200:1|h200|H200-mix"
     "gpu|gpu:a100:1|a100|A100-mix"
+    "gpu-short|gpu:a100:1|a100|A100-short-mix"
     "gpu|gpu:v100:1|v100|V100-mix"
     "gpu|gpu:1|gpu|any-GPU"
 )
@@ -41,9 +41,9 @@ pick_best() {
     for tier in "${TIERS[@]}"; do
         IFS='|' read -r part gres pattern label <<< "$tier"
 
-        idle_count=$(sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
+        idle_count=$(timeout 5 sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
             | grep -i "$pattern" | grep -E '\bidle\b' | wc -l)
-        mix_count=$(sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
+        mix_count=$(timeout 5 sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
             | grep -i "$pattern" | grep -E '\bmix\b' | wc -l)
 
         if [ "$idle_count" -gt 0 ] && [ "$best_score" -gt 0 ]; then

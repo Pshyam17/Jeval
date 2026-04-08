@@ -14,7 +14,6 @@ mkdir -p "$WORKDIR/logs"
 WATCH_TIERS=(
     "gpu|h200|H200"
     "gpu|a100|A100"
-    "multigpu|a100|A100-multigpu"
     "gpu-short|a100|A100-short"
     "gpu|v100|V100"
 )
@@ -24,7 +23,7 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 find_idle_tier() {
     for tier in "${WATCH_TIERS[@]}"; do
         IFS='|' read -r part pattern label <<< "$tier"
-        count=$(sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
+        count=$(timeout 5 sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
             | grep -i "$pattern" | grep -E '\bidle\b' | wc -l)
         if [ "$count" -gt 0 ]; then
             echo "$part|$pattern|$label"
