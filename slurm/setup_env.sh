@@ -22,14 +22,6 @@ mkdir -p "$WORKDIR/logs" "$WORKDIR/checkpoints" \
 module purge
 module load miniconda3/24.11.1
 
-# Create env once; skip if it already exists
-if ! conda env list | grep -q "^jeval "; then
-    conda create -y -n jeval python=3.12
-fi
-
-source activate jeval
-
-# Pin versions that match the training hardware (CUDA 12.1 on A100)
 pip install --quiet --upgrade pip
 
 pip install --quiet \
@@ -47,15 +39,13 @@ pip install --quiet \
     openai \
     pytest
 
-# Pre-download the encoder so compute nodes don't race on first use
-python3.12 - <<'EOF'
+python - <<'EOF'
 from sentence_transformers import SentenceTransformer
 print("Downloading all-mpnet-base-v2 ...")
 SentenceTransformer("all-mpnet-base-v2")
 print("Done.")
 EOF
 
-# Install jeval package in editable mode
 pip install --quiet -e "$WORKDIR"
 
 echo "=== setup complete: $(date) ==="

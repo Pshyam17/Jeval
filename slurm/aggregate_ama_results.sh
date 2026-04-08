@@ -19,11 +19,10 @@ cd "$WORKDIR"
 
 module purge
 module load miniconda3/24.11.1
-source activate jeval
 
 export PYTHONPATH="$WORKDIR:$PYTHONPATH"
 
-python3.12 benchmarks/aggregate_ama_results.py \
+python benchmarks/aggregate_ama_results.py \
     --results-dir benchmarks/results/ama_bench_episodes \
     --out         benchmarks/results/ama_bench_software_final.json
 
