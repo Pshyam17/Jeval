@@ -42,14 +42,14 @@ pick_best() {
         IFS='|' read -r part gres pattern label <<< "$tier"
 
         idle_count=$(sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
-            | grep -i "$pattern" | grep -c '\bidle\b' || echo 0)
+            | grep -i "$pattern" | grep -E '\bidle\b' | wc -l)
         mix_count=$(sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
-            | grep -i "$pattern" | grep -c '\bmix\b' || echo 0)
+            | grep -i "$pattern" | grep -E '\bmix\b' | wc -l)
 
-        if [ "${idle_count:-0}" -gt 0 ] && [ "$best_score" -gt 0 ]; then
+        if [ "$idle_count" -gt 0 ] && [ "$best_score" -gt 0 ]; then
             best_part="$part"; best_gres="$gres"; best_label="$label"
             best_score=0
-        elif [ "${mix_count:-0}" -gt 0 ] && [ "$best_score" -gt 1 ]; then
+        elif [ "$mix_count" -gt 0 ] && [ "$best_score" -gt 1 ]; then
             best_part="$part"; best_gres="$gres"; best_label="$label (mix)"
             best_score=1
         fi
