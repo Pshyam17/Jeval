@@ -37,8 +37,8 @@ echo "=== episode $IDX  node=$SLURMD_NODENAME  start=$(date) ==="
 
 python benchmarks/run_ama_episode.py \
     --episode-idx "$IDX" \
-    --dataset     liir-kuleuven/AMA-Bench \
-    --split       SOFTWARE \
+    --dataset     AMA-bench/AMA-bench \
+    --split       test \
     --predictor   checkpoints/predictor_v2_best.pt \
     --out         "$OUT"
 

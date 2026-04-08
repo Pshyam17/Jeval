@@ -2,7 +2,7 @@
 """
 benchmarks/run_ama_episode.py
 
-Runs one AMA-Bench SOFTWARE episode end-to-end:
+Runs one AMA-Bench episode end-to-end:
   load episode → compress trajectory → store in JevalMemory →
   retrieve+answer per QA pair → judge → write result JSON
 
@@ -11,10 +11,10 @@ Exits with code 0 always; errors are serialized to the output JSON so the
 aggregate step can distinguish real failures from bad scores.
 
 CLI:
-    python3.12 benchmarks/run_ama_episode.py \
+    python benchmarks/run_ama_episode.py \
       --episode-idx 0 \
-      --dataset liir-kuleuven/AMA-Bench \
-      --split SOFTWARE \
+      --dataset AMA-bench/AMA-bench \
+      --split test \
       --predictor checkpoints/predictor_v2_best.pt \
       --out benchmarks/results/ama_bench_episodes/episode_0.json
 """
@@ -98,13 +98,10 @@ def _judge(client: OpenAI, question: str, reference: str, predicted: str) -> tup
 def _load_episode(dataset_name: str, split: str, idx: int) -> Dict[str, Any]:
     from datasets import load_dataset  # type: ignore
 
-    ds = load_dataset(dataset_name, split="test")
-    episodes = [ep for ep in ds if ep.get("domain", "") == split]
-    if idx >= len(episodes):
-        raise IndexError(
-            f"episode_idx {idx} out of range — {split} split has {len(episodes)} episodes"
-        )
-    return episodes[idx]
+    ds = load_dataset(dataset_name, split=split)
+    if idx >= len(ds):
+        raise IndexError(f"episode_idx {idx} out of range — split has {len(ds)} episodes")
+    return ds[idx]
 
 
 # ── Predictor loading ─────────────────────────────────────────────────────────
@@ -218,8 +215,8 @@ def run_episode(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episode-idx", type=int,  required=True)
-    parser.add_argument("--dataset",     default="liir-kuleuven/AMA-Bench")
-    parser.add_argument("--split",       default="SOFTWARE")
+    parser.add_argument("--dataset",     default="AMA-bench/AMA-bench")
+    parser.add_argument("--split",       default="test")
     parser.add_argument("--predictor",   default=None)
     parser.add_argument("--out",         required=True)
     args = parser.parse_args()
