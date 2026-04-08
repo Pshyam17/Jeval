@@ -24,7 +24,7 @@ find_idle_tier() {
     for tier in "${WATCH_TIERS[@]}"; do
         IFS='|' read -r part pattern label <<< "$tier"
         count=$(timeout 5 sinfo -p "$part" -o "%G %t" --noheader 2>/dev/null \
-            | grep -i "$pattern" | grep -E '\bidle\b' | wc -l)
+            | grep -i "$pattern" | grep -E '\b(idle|mix)\b' | wc -l)
         if [ "$count" -gt 0 ]; then
             echo "$part|$pattern|$label"
             return 0
