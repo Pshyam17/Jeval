@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Jeval · Live Demo</title>
+  <style>
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#050505; display:flex; flex-direction:column;
+           height:100vh; overflow:hidden; font-family:monospace; }
+    .header {
+      background:#0a0a0a; border-bottom:1px solid #1a1a1a;
+      padding:10px 24px; display:flex; align-items:center;
+      justify-content:space-between; flex-shrink:0;
+    }
+    .logo { color:#ffd166; font-size:15px; letter-spacing:4px; font-weight:500; }
+    .tagline { color:#444; font-size:11px; letter-spacing:1px; }
+    .status { font-size:11px; }
+    .status.live { color:#06d6a0; }
+    .status.connecting { color:#ffd166; }
+    .status.disconnected { color:#ff6b35; }
+    .panels { display:flex; flex:1; gap:1px; background:#1a1a1a; overflow:hidden; }
+    iframe { flex:1; border:none; background:#080808; }
+    .divider { width:1px; background:#1a1a1a; flex-shrink:0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">JEVAL</span>
+    <span class="tagline">pre-hoc semantic fidelity · agent memory compression</span>
+    <span class="status connecting" id="status">connecting...</span>
+  </div>
+  <div class="panels">
+    <iframe src="/latent" title="Latent Space Navigator"></iframe>
+    <div class="divider"></div>
+    <iframe src="/compression" title="Compression Theater" style="flex:0.6"></iframe>
+  </div>
+  <script>
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const s = document.getElementById("status");
+    ws.onopen = () => { s.textContent = "● live"; s.className = "status live"; };
+    ws.onclose = () => { s.textContent = "○ disconnected"; s.className = "status disconnected"; };
+  </script>
+</body>
+</html>

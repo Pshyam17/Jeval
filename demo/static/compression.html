@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jeval · Compression Theater</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #080808; color: #e0e0e0;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 13px; height: 100vh; overflow: hidden;
+  display: grid;
+  grid-template-rows: 36px 1fr 28px 36px 90px 96px;
+  grid-template-columns: 1fr;
+}
+
+/* row 1: header */
+#header {
+  background: #0d0d0d; border-bottom: 1px solid #1a1a1a;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; font-size: 11px; color: #555; flex-shrink: 0;
+}
+#header .title { color: #888; letter-spacing: 2px; }
+#header .seq-id { color: #ffd166; }
+
+/* row 2: token columns */
+#token-area {
+  display: grid; grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid #1a1a1a; overflow: hidden;
+}
+.token-col { padding: 10px 12px; overflow-y: auto; line-height: 1.7; }
+.token-col-label {
+  font-size: 9px; letter-spacing: 2px; color: #333;
+  margin-bottom: 6px;
+}
+#cold-overlay {
+  display: none; color: #663333; padding: 10px 12px;
+  font-size: 12px; align-items: center;
+}
+
+/* token span styles */
+.tok { opacity: 0; animation: fadein 80ms forwards; margin-right: 3px; }
+@keyframes fadein { to { opacity: 1; } }
+.tok-anchor     { color: #ffd166; text-decoration: underline; }
+.tok-stopword   { color: #3a3a3a; }
+.tok-compressible { color: #e0e0e0; }
+.tok-preserved  { color: #ffd166; }
+.tok-generated  { color: #a78bfa; }
+.tok-paraphrased { color: #67e8f9; }
+
+/* row 3: budget bar */
+#budget-section {
+  padding: 4px 12px 0; background: #0a0a0a;
+  border-bottom: 1px solid #111;
+}
+#budget-label { font-size: 9px; color: #444; margin-bottom: 3px; letter-spacing: 1px; }
+#budget-track { height: 6px; background: #1a1a1a; border-radius: 2px; overflow: hidden; }
+#budget-fill  {
+  height: 100%; width: 0; border-radius: 2px;
+  transition: width 500ms ease-out, background-color 200ms;
+}
+
+/* row 4: EPE display */
+#epe-section {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 12px; border-bottom: 1px solid #111; background: #0a0a0a;
+}
+#epe-label { font-size: 10px; color: #444; letter-spacing: 2px; }
+#epe-value { font-size: 24px; font-weight: bold; font-variant-numeric: tabular-nums; }
+#epe-verdict { font-size: 10px; letter-spacing: 2px; }
+
+/* row 5: embedding mini-canvas */
+#embed-section {
+  padding: 8px 12px; border-bottom: 1px solid #111; background: #090909;
+}
+#embed-label { font-size: 9px; color: #333; letter-spacing: 1px; margin-bottom: 4px; }
+#embed-canvas { display: block; }
+
+/* row 6: event log */
+#event-log {
+  padding: 6px 12px; overflow: hidden; background: #080808;
+}
+#event-log-label { font-size: 9px; color: #2a2a2a; letter-spacing: 2px; margin-bottom: 4px; }
+#event-lines { font-size: 10px; color: #444; line-height: 1.6; overflow: hidden; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <span class="title">COMPRESSION THEATER</span>
+  <span>seq: <span class="seq-id" id="hdr-seq">-</span></span>
+</div>
+
+<div id="token-area">
+  <div class="token-col" id="orig-col">
+    <div class="token-col-label">ORIGINAL</div>
+    <div id="orig-tokens"></div>
+  </div>
+  <div class="token-col" id="comp-col" style="border-left:1px solid #111;">
+    <div class="token-col-label">COMPRESSED</div>
+    <div id="comp-tokens"></div>
+    <div id="cold-overlay">NOVELTY GATE: REJECTED</div>
+  </div>
+</div>
+
+<div id="budget-section">
+  <div id="budget-label">—</div>
+  <div id="budget-track"><div id="budget-fill"></div></div>
+</div>
+
+<div id="epe-section">
+  <span id="epe-label">EPE</span>
+  <span id="epe-value" style="color:#555;">---</span>
+  <span id="epe-verdict"></span>
+</div>
+
+<div id="embed-section">
+  <div id="embed-label">EMBEDDING DISTANCE</div>
+  <canvas id="embed-canvas" width="200" height="62"></canvas>
+</div>
+
+<div id="event-log">
+  <div id="event-log-label">EVENT LOG</div>
+  <div id="event-lines"></div>
+</div>
+
+<script>
+// ── state ─────────────────────────────────────────────────────────────────────
+let currentSeqId = null;
+let currentAnchors = [];
+let currentOrigTokens = [];
+let epeAnimFrame = null;
+
+// ── utility ───────────────────────────────────────────────────────────────────
+function ts() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(n => String(n).padStart(2,'0')).join(':');
+}
+
+function appendEventLog(line) {
+  const el = document.getElementById('event-lines');
+  const div = document.createElement('div');
+  div.textContent = `[${ts()}] ${line}`;
+  div.style.cssText = 'opacity:0;transform:translateY(-8px);transition:opacity 200ms,transform 200ms;';
+  el.insertBefore(div, el.firstChild);
+  requestAnimationFrame(() => {
+    div.style.opacity = '1';
+    div.style.transform = 'translateY(0)';
+  });
+  // keep last 5
+  while (el.children.length > 5) el.removeChild(el.lastChild);
+}
+
+function budgetColor(b) {
+  if (b < 0.5) return '#06d6a0';
+  if (b <= 0.8) return '#ffd166';
+  return '#ff6b35';
+}
+
+function epeColor(epe) {
+  if (epe < 0.15) return { color: '#06d6a0', label: 'FAITHFUL' };
+  if (epe <= 0.25) return { color: '#ffd166', label: 'BORDERLINE' };
+  return { color: '#ff6b35', label: 'RETRY' };
+}
+
+// ── handlers ──────────────────────────────────────────────────────────────────
+function handleSegmentIngest(msg) {
+  currentSeqId = msg.seq_id;
+  currentAnchors = msg.anchors || [];
+  currentOrigTokens = msg.original_tokens || [];
+  document.getElementById('hdr-seq').textContent = msg.seq_id;
+
+  // populate ORIGINAL column
+  const origDiv = document.getElementById('orig-tokens');
+  origDiv.innerHTML = '';
+  currentOrigTokens.forEach(t => {
+    const span = document.createElement('span');
+    span.className = 'tok tok-' + t.role;
+    span.textContent = t.text + ' ';
+    origDiv.appendChild(span);
+  });
+
+  // clear COMPRESSED column
+  document.getElementById('comp-tokens').innerHTML = '';
+  document.getElementById('cold-overlay').style.display = 'none';
+
+  if (msg.action === 'cold_only') {
+    document.getElementById('cold-overlay').style.display = 'flex';
+    document.getElementById('epe-value').textContent = '---';
+    document.getElementById('epe-value').style.color = '#555';
+    document.getElementById('epe-verdict').textContent = '';
+    appendEventLog(`seq_${msg.seq_id}  ${msg.content_type}  cold_only  epe=${msg.epe_novelty.toFixed(3)}  budget=0%`);
+  }
+}
+
+function handleCompressionStart(msg) {
+  currentSeqId = msg.seq_id;
+  document.getElementById('comp-tokens').innerHTML = '';
+  document.getElementById('cold-overlay').style.display = 'none';
+  document.getElementById('epe-value').textContent = '---';
+  document.getElementById('epe-value').style.color = '#555';
+  document.getElementById('epe-verdict').textContent = '';
+
+  const fill = document.getElementById('budget-fill');
+  fill.style.width = '0';
+  fill.style.backgroundColor = budgetColor(msg.budget);
+  document.getElementById('budget-label').textContent =
+    `${msg.content_type} · ${msg.budget_pct}% budget · attempt ${msg.attempt}`;
+
+  requestAnimationFrame(() => {
+    fill.style.width = msg.budget_pct + '%';
+  });
+}
+
+function handleCompressionToken(msg) {
+  const origSet = new Set(currentOrigTokens.map(t => t.text.toLowerCase()));
+  const anchorSet = new Set(currentAnchors.map(a => a.toLowerCase()));
+  const token = msg.token;
+  const tokenLower = token.trim().toLowerCase();
+
+  let cls;
+  if (anchorSet.has(tokenLower) || currentAnchors.some(a => token.includes(a))) {
+    cls = 'tok-preserved';
+  } else if (!origSet.has(tokenLower)) {
+    cls = 'tok-generated';
+  } else {
+    cls = 'tok-paraphrased';
+  }
+
+  const span = document.createElement('span');
+  span.className = 'tok ' + cls;
+  span.textContent = token;
+  document.getElementById('comp-tokens').appendChild(span);
+}
+
+function handleCompressionComplete(msg) {
+  if (!msg.passed_gate) {
+    // flash red, clear compressed tokens
+    const col = document.getElementById('comp-col');
+    col.style.backgroundColor = 'rgba(255,0,0,0.08)';
+    setTimeout(() => { col.style.backgroundColor = ''; }, 300);
+    setTimeout(() => { document.getElementById('comp-tokens').innerHTML = ''; }, 310);
+    return;
+  }
+
+  // fallback: compression_token events may be lost when the replay buffer delivers
+  // all events at t=0 (later segment_ingest clears comp-tokens before tokens render).
+  // render compressed_text directly from this event if the column is still empty.
+  const tokensEl = document.getElementById('comp-tokens');
+  if (tokensEl && tokensEl.children.length === 0 && msg.compressed_text) {
+    msg.compressed_text.trim().split(/\s+/).forEach(tok => {
+      const span = document.createElement('span');
+      span.className = 'tok tok-paraphrased';
+      span.textContent = tok + ' ';
+      tokensEl.appendChild(span);
+    });
+  }
+
+  // animate EPE count-up
+  if (epeAnimFrame) cancelAnimationFrame(epeAnimFrame);
+  const target = msg.epe_fidelity;
+  const t0 = performance.now();
+  const dur = 600;
+  function tick(now) {
+    const p = Math.min((now - t0) / dur, 1);
+    const val = target * p;
+    const epeEl = document.getElementById('epe-value');
+    epeEl.textContent = val.toFixed(3);
+    const { color, label } = epeColor(target);
+    epeEl.style.color = color;
+    document.getElementById('epe-verdict').textContent = label;
+    document.getElementById('epe-verdict').style.color = color;
+    if (p < 1) epeAnimFrame = requestAnimationFrame(tick);
+  }
+  epeAnimFrame = requestAnimationFrame(tick);
+
+  drawEmbedCanvas(target);
+
+  const pct = Math.round((document.getElementById('budget-fill').style.width || '0'));
+  appendEventLog(`seq_${msg.seq_id}  ${msg.passed_gate ? 'pass' : 'retry'}  epe_fid=${target.toFixed(3)}`);
+}
+
+// ── embedding mini-canvas ─────────────────────────────────────────────────────
+function drawEmbedCanvas(epe) {
+  const canvas = document.getElementById('embed-canvas');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const origX = 30;
+  const compX = Math.round(30 + epe * 140);
+  const cy = h / 2;
+
+  // connecting line
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(origX, cy);
+  ctx.lineTo(compX, cy);
+  ctx.stroke();
+
+  // orig circle
+  ctx.fillStyle = '#4a9eff';
+  ctx.beginPath();
+  ctx.arc(origX, cy, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // comp circle
+  ctx.fillStyle = '#ff6b35';
+  ctx.beginPath();
+  ctx.arc(compX, cy, 8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // labels
+  ctx.fillStyle = '#555';
+  ctx.font = '9px monospace';
+  ctx.fillText('orig', origX - 12, cy + 20);
+  ctx.fillText('comp', compX - 14, cy + 20);
+
+  // EPE value
+  ctx.fillStyle = '#666';
+  ctx.font = '10px monospace';
+  ctx.fillText(`epe=${epe.toFixed(3)}`, w / 2 - 30, 14);
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onmessage = e => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === 'segment_ingest')       handleSegmentIngest(msg);
+  if (msg.type === 'compression_start')    handleCompressionStart(msg);
+  if (msg.type === 'compression_token')    handleCompressionToken(msg);
+  if (msg.type === 'compression_complete') handleCompressionComplete(msg);
+};
+</script>
+</body>
+</html>
