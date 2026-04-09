@@ -10,7 +10,6 @@ from typing import List
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
@@ -18,32 +17,28 @@ from jeval.encoders.predictor_head import PreLNTransformerPredictor
 from jeval.encoders.sentence_encoder import FrozenEncoder
 
 
-# ── dataset ───────────────────────────────────────────────────────────────────
+# ── datasets ──────────────────────────────────────────────────────────────────
 
-class HardNegDataset(Dataset):
-    """
-    Hard-negative pairs only — enc(compressed) → enc(original) regression.
-    Faithful pairs have MSE ≈ 0 so contribute no gradient; skip them.
-    """
-
-    def __init__(self, pairs_path: Path, encoder: FrozenEncoder):
+class EmbeddingPairDataset(Dataset):
+    def __init__(self, pairs_path: Path, encoder: FrozenEncoder, label: str):
         pairs: List[tuple] = []
         with pairs_path.open() as f:
             for line in f:
                 row = json.loads(line)
-                if row["label"] == "hard_negative":
+                if row["label"] == label:
                     pairs.append((row["compressed"], row["original"]))
 
         if not pairs:
-            raise ValueError(f"no hard_negative rows found in {pairs_path}")
+            raise ValueError(f"no '{label}' rows found in {pairs_path}")
 
-        print(f"  encoding {len(pairs)} hard negative pairs...")
-        comp_texts = [c for c, _ in pairs]
-        orig_texts = [o for _, o in pairs]
-
-        self.comp_embs = torch.from_numpy(encoder.encode(comp_texts)).float()
-        self.orig_embs = torch.from_numpy(encoder.encode(orig_texts)).float()
-        print(f"  dataset size: {len(self.comp_embs)}")
+        print(f"  encoding {len(pairs)} {label} pairs...")
+        self.comp_embs = torch.from_numpy(
+            encoder.encode([c for c, _ in pairs])
+        ).float()
+        self.orig_embs = torch.from_numpy(
+            encoder.encode([o for _, o in pairs])
+        ).float()
+        print(f"  {label} dataset size: {len(self.comp_embs)}")
 
     def __len__(self) -> int:
         return len(self.comp_embs)
@@ -60,11 +55,17 @@ def train_one(
     lr: float,
     epochs: int,
     batch_size: int,
+    margin: float,
+    alpha: float,
     ckpt_path: Path,
 ) -> float:
-    dataset = HardNegDataset(pairs_path, encoder)
-    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                         num_workers=2, drop_last=False)
+    faithful_ds   = EmbeddingPairDataset(pairs_path, encoder, "faithful")
+    hard_neg_ds   = EmbeddingPairDataset(pairs_path, encoder, "hard_negative")
+
+    faithful_loader = DataLoader(faithful_ds, batch_size=batch_size,
+                                 shuffle=True, num_workers=2, drop_last=True)
+    hard_neg_loader = DataLoader(hard_neg_ds, batch_size=batch_size,
+                                 shuffle=True, num_workers=2, drop_last=True)
 
     pred      = PreLNTransformerPredictor(encoder.dim())
     optimizer = torch.optim.AdamW(pred.parameters(), lr=lr, weight_decay=1e-4)
@@ -74,17 +75,34 @@ def train_one(
     pred.to(device)
     pred.train()
 
+    n_batches = min(len(faithful_loader), len(hard_neg_loader))
     best_loss = float("inf")
-    print(f"\n  lr={lr}  device={device}  batches/epoch={len(loader)}")
+    print(f"\n  lr={lr}  margin={margin}  alpha={alpha}  device={device}  batches/epoch={n_batches}")
 
     for epoch in range(epochs):
         epoch_loss = 0.0
-        for comp_emb, orig_emb in loader:
-            comp_emb = comp_emb.to(device)
-            orig_emb = orig_emb.to(device)
+        faithful_iter = iter(faithful_loader)
+        hard_neg_iter = iter(hard_neg_loader)
 
-            pred_emb = pred(comp_emb)           # normalized by forward()
-            loss = F.mse_loss(pred_emb, orig_emb)
+        for _ in range(n_batches):
+            f_comp, f_orig = next(faithful_iter)
+            h_comp, h_orig = next(hard_neg_iter)
+
+            f_comp = f_comp.to(device)
+            f_orig = f_orig.to(device)
+            h_comp = h_comp.to(device)
+            h_orig = h_orig.to(device)
+
+            # faithful term: pred should be close to original
+            pred_f = pred(f_comp)
+            loss_faithful = F.mse_loss(pred_f, f_orig)
+
+            # lossy term: pred should be far from original (hinge)
+            pred_h = pred(h_comp)
+            dist = F.mse_loss(pred_h, h_orig, reduction="none").mean(dim=-1)
+            loss_lossy = F.relu(margin - dist).mean()
+
+            loss = loss_faithful + alpha * loss_lossy
 
             optimizer.zero_grad()
             loss.backward()
@@ -93,7 +111,7 @@ def train_one(
             epoch_loss += loss.item()
 
         scheduler.step()
-        avg = epoch_loss / max(len(loader), 1)
+        avg = epoch_loss / max(n_batches, 1)
 
         if avg < best_loss:
             best_loss = avg
@@ -166,7 +184,9 @@ def main() -> None:
     parser.add_argument("--out-path",    default="checkpoints/predictor_v3_best.pt")
     parser.add_argument("--lr",          nargs="+", type=float, default=[3e-4, 1e-4])
     parser.add_argument("--epochs",      type=int,   default=100)
-    parser.add_argument("--batch-size",  type=int,   default=128)
+    parser.add_argument("--batch-size",  type=int,   default=64)
+    parser.add_argument("--margin",      type=float, default=0.3)
+    parser.add_argument("--alpha",       type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=0.07)  # unused, kept for CLI compat
     args = parser.parse_args()
 
@@ -184,7 +204,8 @@ def main() -> None:
         ckpt = out_path.parent / f"predictor_v3_lr{lr:.0e}.pt"
         print(f"\ntraining lr={lr}  →  {ckpt}")
         t0   = time.time()
-        loss = train_one(pairs_path, encoder, lr, args.epochs, args.batch_size, ckpt)
+        loss = train_one(pairs_path, encoder, lr, args.epochs,
+                         args.batch_size, args.margin, args.alpha, ckpt)
         print(f"  finished in {(time.time()-t0)/60:.1f}m  best_loss={loss:.6f}")
 
         if loss < best_overall_loss:
