@@ -20,27 +20,26 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 
 # ── dataset ───────────────────────────────────────────────────────────────────
 
-class NTXentDataset(Dataset):
+class HardNegDataset(Dataset):
     """
-    Hard-negative pairs only — faithful pairs have no natural negative
-    in the NT-Xent formulation so they're skipped here.
-    Each item is (compressed_emb, original_emb).
+    Hard-negative pairs only — enc(compressed) → enc(original) regression.
+    Faithful pairs have MSE ≈ 0 so contribute no gradient; skip them.
     """
 
     def __init__(self, pairs_path: Path, encoder: FrozenEncoder):
-        hard_negs: List[tuple] = []
+        pairs: List[tuple] = []
         with pairs_path.open() as f:
             for line in f:
                 row = json.loads(line)
                 if row["label"] == "hard_negative":
-                    hard_negs.append((row["compressed"], row["original"]))
+                    pairs.append((row["compressed"], row["original"]))
 
-        if not hard_negs:
+        if not pairs:
             raise ValueError(f"no hard_negative rows found in {pairs_path}")
 
-        print(f"  encoding {len(hard_negs)} hard negative pairs...")
-        comp_texts = [c for c, _ in hard_negs]
-        orig_texts = [o for _, o in hard_negs]
+        print(f"  encoding {len(pairs)} hard negative pairs...")
+        comp_texts = [c for c, _ in pairs]
+        orig_texts = [o for _, o in pairs]
 
         self.comp_embs = torch.from_numpy(encoder.encode(comp_texts)).float()
         self.orig_embs = torch.from_numpy(encoder.encode(orig_texts)).float()
@@ -53,16 +52,6 @@ class NTXentDataset(Dataset):
         return self.comp_embs[idx], self.orig_embs[idx]
 
 
-# ── NT-Xent loss ──────────────────────────────────────────────────────────────
-
-def nt_xent_loss(z_comp: torch.Tensor, z_orig: torch.Tensor, temperature: float) -> torch.Tensor:
-    # z_comp, z_orig: (B, D), both L2-normalized before calling
-    sim = torch.mm(z_comp, z_orig.T) / temperature  # (B, B)
-    labels = torch.arange(sim.size(0), device=sim.device)
-    loss = (F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels)) / 2
-    return loss
-
-
 # ── training loop ─────────────────────────────────────────────────────────────
 
 def train_one(
@@ -71,12 +60,11 @@ def train_one(
     lr: float,
     epochs: int,
     batch_size: int,
-    temperature: float,
     ckpt_path: Path,
 ) -> float:
-    dataset = NTXentDataset(pairs_path, encoder)
+    dataset = HardNegDataset(pairs_path, encoder)
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                         num_workers=2, drop_last=True)
+                         num_workers=2, drop_last=False)
 
     pred      = PreLNTransformerPredictor(encoder.dim())
     optimizer = torch.optim.AdamW(pred.parameters(), lr=lr, weight_decay=1e-4)
@@ -87,7 +75,7 @@ def train_one(
     pred.train()
 
     best_loss = float("inf")
-    print(f"\n  lr={lr}  temp={temperature}  device={device}  batches/epoch={len(loader)}")
+    print(f"\n  lr={lr}  device={device}  batches/epoch={len(loader)}")
 
     for epoch in range(epochs):
         epoch_loss = 0.0
@@ -95,12 +83,8 @@ def train_one(
             comp_emb = comp_emb.to(device)
             orig_emb = orig_emb.to(device)
 
-            predicted = pred(comp_emb)
-
-            z_comp = F.normalize(predicted, dim=-1)
-            z_orig = F.normalize(orig_emb,  dim=-1)
-
-            loss = nt_xent_loss(z_comp, z_orig, temperature)
+            pred_emb = pred(comp_emb)           # normalized by forward()
+            loss = F.mse_loss(pred_emb, orig_emb)
 
             optimizer.zero_grad()
             loss.backward()
@@ -128,7 +112,6 @@ def verify_separation(ckpt_path: Path, encoder: FrozenEncoder, pairs_path: Path)
     pred.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
     pred.eval()
 
-    # load a sample from the actual pairs file for verification
     faithful_cases, lossy_cases = [], []
     with pairs_path.open() as f:
         for line in f:
@@ -153,7 +136,6 @@ def verify_separation(ckpt_path: Path, encoder: FrozenEncoder, pairs_path: Path)
     faithful_epes = compute_epes(faithful_cases)
     lossy_epes    = compute_epes(lossy_cases)
 
-    # also report cos_sim gap directly
     def cos_sims(cases):
         sims = []
         for comp, orig in cases:
@@ -180,16 +162,13 @@ def verify_separation(ckpt_path: Path, encoder: FrozenEncoder, pairs_path: Path)
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pairs",       "--data", default="train/data/pairs_v2.jsonl")
-    parser.add_argument("--out-path",    default="checkpoints/predictor_v2_best.pt")
+    parser.add_argument("--pairs",       "--data", default="train/data/pairs_v3.jsonl")
+    parser.add_argument("--out-path",    default="checkpoints/predictor_v3_best.pt")
     parser.add_argument("--lr",          nargs="+", type=float, default=[3e-4, 1e-4])
     parser.add_argument("--epochs",      type=int,   default=100)
-    parser.add_argument("--batch-size",  type=int,   default=256)
-    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--batch-size",  type=int,   default=128)
+    parser.add_argument("--temperature", type=float, default=0.07)  # unused, kept for CLI compat
     args = parser.parse_args()
-
-    if args.batch_size < 128:
-        parser.error("--batch-size must be >= 128 for NT-Xent (need enough in-batch negatives)")
 
     pairs_path = Path(args.pairs)
     out_path   = Path(args.out_path)
@@ -202,11 +181,10 @@ def main() -> None:
     best_ckpt = None
 
     for lr in args.lr:
-        ckpt = out_path.parent / f"predictor_v2_lr{lr:.0e}.pt"
+        ckpt = out_path.parent / f"predictor_v3_lr{lr:.0e}.pt"
         print(f"\ntraining lr={lr}  →  {ckpt}")
         t0   = time.time()
-        loss = train_one(pairs_path, encoder, lr, args.epochs,
-                         args.batch_size, args.temperature, ckpt)
+        loss = train_one(pairs_path, encoder, lr, args.epochs, args.batch_size, ckpt)
         print(f"  finished in {(time.time()-t0)/60:.1f}m  best_loss={loss:.6f}")
 
         if loss < best_overall_loss:
