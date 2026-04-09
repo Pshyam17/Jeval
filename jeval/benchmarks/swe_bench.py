@@ -20,10 +20,10 @@ class SWEBenchLoader:
         sessions = []
         for item in dataset:
             problem = item["problem_statement"]
-            solution = item["solution"]
+            patch = item["patch"]
             segments = [
-                Segment(content=problem, turn=0),
-                Segment(content=solution, turn=1),
+                Segment(text=problem, role="user", turn=0, source="swe-bench"),
+                Segment(text=patch, role="assistant", turn=1, source="swe-bench"),
             ]
             session = Session(session_id=item["instance_id"], segments=segments)
             sessions.append(session)

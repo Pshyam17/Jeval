@@ -48,8 +48,9 @@ exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "--strict-markers --tb=short --cov=jeval"
+addopts = "--strict-markers --tb=short --cov=jeval --cov=demo"
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.black]
 line-length = 88
