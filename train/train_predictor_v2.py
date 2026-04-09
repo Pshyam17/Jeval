@@ -68,7 +68,7 @@ def train_one(
                                  shuffle=True, num_workers=2, drop_last=True)
 
     pred      = PreLNTransformerPredictor(encoder.dim())
-    optimizer = torch.optim.AdamW(pred.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(pred.parameters(), lr=lr, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
