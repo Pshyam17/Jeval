@@ -124,10 +124,16 @@ async def websocket_endpoint(ws: WebSocket):
                     from jeval.memory.query_classifier import QueryClassifier
                     qc = QueryClassifier()
                     query_type = qc.classify(query)
+                    # collect seq_ids from hot cache hits so Panel 1 can pulse them
+                    try:
+                        cache_hits = _memory._hot_cache.retrieve(query, k=5)
+                        seq_ids = [h["seq_id"] for h in cache_hits if "seq_id" in h]
+                    except Exception:
+                        seq_ids = []
                     event = RetrievalEvent(
                         query=query,
                         query_type=query_type,
-                        result_seq_ids=[],
+                        result_seq_ids=seq_ids,
                         result_text=result,
                     )
                     await manager.broadcast(event)

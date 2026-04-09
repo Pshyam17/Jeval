@@ -40,6 +40,21 @@ canvas { display: block; }
   background: #ffd166; color: #000; border: none; padding: 8px 16px;
   font-family: monospace; font-size: 12px; cursor: pointer;
 }
+
+#query-result {
+  display: none;
+  position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
+  width: 560px; max-height: 160px; overflow-y: auto;
+  background: rgba(10,10,10,0.95); border: 1px solid #333;
+  padding: 12px 14px; font-size: 11px; color: #ccc; z-index: 100;
+  white-space: pre-wrap; word-break: break-word; line-height: 1.6;
+}
+#query-result .qr-label {
+  font-size: 9px; letter-spacing: 2px; color: #555; margin-bottom: 6px;
+}
+#query-result .qr-type {
+  font-size: 9px; color: #ffd166; float: right;
+}
 </style>
 </head>
 <body>
@@ -57,6 +72,12 @@ canvas { display: block; }
 <div id="inspect">
   <span class="close" id="inspect-close">✕</span>
   <span id="inspect-content"></span>
+</div>
+
+<div id="query-result">
+  <span class="qr-label">MEMORY RESULT</span>
+  <span class="qr-type" id="qr-type"></span>
+  <div id="qr-text"></div>
 </div>
 
 <div id="query-bar">
@@ -238,6 +259,18 @@ function handleContradiction(msg) {
 }
 
 function handleRetrieval(msg) {
+  // show result text
+  const box = document.getElementById('query-result');
+  const textEl = document.getElementById('qr-text');
+  const typeEl = document.getElementById('qr-type');
+  textEl.textContent = msg.result_text || '(no result)';
+  typeEl.textContent = msg.query_type || '';
+  box.style.display = 'block';
+  // auto-hide after 12 seconds
+  clearTimeout(box._hideTimer);
+  box._hideTimer = setTimeout(() => { box.style.display = 'none'; }, 12000);
+
+  // pulse matching points in 3D space
   (msg.result_seq_ids || []).forEach(sid => {
     const p = points[sid];
     if (!p) return;
