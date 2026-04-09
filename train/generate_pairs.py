@@ -11,7 +11,6 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
-# encoder loaded once here, shared by all generation functions
 from sentence_transformers import SentenceTransformer
 _ENC: Optional[SentenceTransformer] = None
 
@@ -226,54 +225,12 @@ def _faithful_compress(text: str, target_ratio: float = 0.70) -> str:
     return " ".join(result)
 
 
-# ── hard negative transforms ──────────────────────────────────────────────────
-
-_OUTCOME_MAP = {
-    "failed": "succeeded",
-    "passed": "failed",
-    "rolled back": "committed",
-    "timed out": "completed",
-    "crashed": "recovered",
-    "deployed": "reverted",
-    "resolved": "persisted",
-    "fixed": "regressed",
-    "succeeded": "failed",
-    "completed": "timed out",
-    "recovered": "crashed",
-    "reverted": "deployed",
-    "persisted": "resolved",
-    "regressed": "fixed",
-    "committed": "rolled back",
-    "broke": "fixed",
-}
-
-def _transform_outcome_inversion(text: str) -> Optional[str]:
-    for outcome, opposite in _OUTCOME_MAP.items():
-        pattern = re.compile(r'\b' + re.escape(outcome) + r'\b', re.IGNORECASE)
-        if pattern.search(text):
-            result = pattern.sub(opposite, text, count=1)
-            if result != text:
-                return result
-    return None
-
-
-_STEP_RE = re.compile(r'\b(step\s+)(\d+)\b|\[step\s+(\d+)\]', re.IGNORECASE)
-
-def _transform_step_number_swap(text: str) -> Optional[str]:
-    m = _STEP_RE.search(text)
-    if not m:
-        return None
-    n = int(m.group(2) or m.group(3))
-    candidates = [n * 2, n + 37, abs(n - 13) + 1, n * 3 + 7]
-    candidates = [c for c in candidates if c > 0 and c != n]
-    if not candidates:
-        return None
-    new_n = random.choice(candidates)
-    return _STEP_RE.sub(lambda mo: (mo.group(1) or "[step ") + str(new_n) + ("]" if mo.group(3) else ""), text, count=1)
-
+# ── causal inversion transform ────────────────────────────────────────────────
 
 _CAUSAL_RE = re.compile(
-    r'(.*?)\s+(because|due to|caused by|triggered by|resulting from|after)\s+(.*)',
+    r'(.*?)\s+(because|due to|caused by|triggered by|resulting from|after|'
+    r'when|which caused|so that|in order to|leading to|as a result|'
+    r'consequently|therefore|thus|hence)\s+(.*)',
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -288,6 +245,10 @@ _CAUSE_INVERSIONS = [
     ("rate limit exceeded", "rate limit not reached"),
     ("invalid token", "valid token"),
     ("missing dependency", "all dependencies satisfied"),
+    ("unexpected error", "expected behavior"),
+    ("race condition", "sequential execution"),
+    ("null reference", "valid reference"),
+    ("stack overflow", "normal recursion depth"),
 ]
 
 def _transform_causal_inversion(text: str) -> Optional[str]:
@@ -295,43 +256,13 @@ def _transform_causal_inversion(text: str) -> Optional[str]:
     if not m:
         return None
     effect, connector, cause = m.group(1), m.group(2), m.group(3)
-    # pick an inversion that's different from the existing cause
     for orig_cause, inv_cause in random.sample(_CAUSE_INVERSIONS, len(_CAUSE_INVERSIONS)):
         if orig_cause.lower() not in cause.lower():
             return f"{effect} {connector} {inv_cause}"
-    # fallback: use first inversion unconditionally
     return f"{effect} {connector} {_CAUSE_INVERSIONS[0][1]}"
 
 
-_SENTIMENT_MAP = {
-    "working":     "broken",
-    "healthy":     "degraded",
-    "passing":     "failing",
-    "clean":       "corrupted",
-    "stable":      "unstable",
-    "valid":       "invalid",
-    "correct":     "incorrect",
-    "successful":  "unsuccessful",
-    "broken":      "working",
-    "failing":     "passing",
-    "corrupted":   "clean",
-    "unstable":    "stable",
-    "invalid":     "valid",
-    "incorrect":   "correct",
-    "erroring":    "healthy",
-    "degraded":    "healthy",
-    "unsuccessful": "successful",
-}
-
-def _transform_sentiment_flip(text: str) -> Optional[str]:
-    for word, opposite in _SENTIMENT_MAP.items():
-        pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-        if pattern.search(text):
-            result = pattern.sub(opposite, text, count=1)
-            if result != text:
-                return result
-    return None
-
+# ── context swap transform ────────────────────────────────────────────────────
 
 _CLAUSE_RE = re.compile(
     r'(.+?)\s+(after|due to|because|—|triggered by|resulting from)\s+(.+)',
@@ -339,7 +270,6 @@ _CLAUSE_RE = re.compile(
 )
 
 def _transform_context_swap(text_a: str, text_b: str) -> Optional[str]:
-    # try to extract a causal clause from B and attach to subject of A
     m_b = _CLAUSE_RE.search(text_b)
     m_a = _CLAUSE_RE.search(text_a)
     if m_b:
@@ -366,25 +296,21 @@ def _filter_by_similarity(
     threshold: float = 0.90,
     chunk: int = 512,
 ) -> Tuple[List[dict], int]:
-    """
-    Encode compressed+original in batches, reject pairs with cos_sim > threshold.
-    Returns (kept_pairs, n_rejected).
-    """
     enc = _enc()
     kept: List[dict] = []
     rejected = 0
 
     for i in range(0, len(candidates), chunk):
         batch = candidates[i : i + chunk]
-        comp_texts = [p["compressed"] for p in batch]
-        orig_texts = [p["original"]   for p in batch]
-
-        comp_embs = enc.encode(comp_texts, batch_size=64, show_progress_bar=False,
-                               normalize_embeddings=True)
-        orig_embs = enc.encode(orig_texts, batch_size=64, show_progress_bar=False,
-                               normalize_embeddings=True)
-
-        sims = np.einsum("ij,ij->i", comp_embs, orig_embs)  # dot of normalized = cos_sim
+        comp_embs = enc.encode(
+            [p["compressed"] for p in batch],
+            batch_size=64, show_progress_bar=False, normalize_embeddings=True,
+        )
+        orig_embs = enc.encode(
+            [p["original"] for p in batch],
+            batch_size=64, show_progress_bar=False, normalize_embeddings=True,
+        )
+        sims = np.einsum("ij,ij->i", comp_embs, orig_embs)
         for pair, sim in zip(batch, sims):
             pair["_cos_sim"] = float(sim)
             if float(sim) <= threshold:
@@ -398,10 +324,9 @@ def _filter_by_similarity(
 # ── faithful generation ───────────────────────────────────────────────────────
 
 def _generate_faithful(originals: List[str], n: int) -> List[dict]:
-    pairs: List[dict] = []
-    ratios = [0.62, 0.68, 0.72, 0.75, 0.78]
     pool = (originals * ((n // len(originals)) + 1))[:n * 2]
     random.shuffle(pool)
+    ratios = [0.62, 0.68, 0.72, 0.75, 0.78]
     candidates: List[dict] = []
     for orig in pool:
         ratio = random.choice(ratios)
@@ -415,17 +340,14 @@ def _generate_faithful(originals: List[str], n: int) -> List[dict]:
             })
         if len(candidates) >= n * 2:
             break
-
-    # faithful pairs: keep only those with cos_sim <= 0.98 (near-identical check)
-    # faithful pairs are MEANT to be similar, but identical = useless
     kept, _ = _filter_by_similarity(candidates, threshold=0.98)
     return kept[:n]
 
 
 # ── hard negative generation ──────────────────────────────────────────────────
 
-def _make_pool(originals: List[str]) -> List[str]:
-    pool = originals * 10
+def _make_pool(originals: List[str], multiplier: int = 10) -> List[str]:
+    pool = originals * multiplier
     random.shuffle(pool)
     return pool
 
@@ -439,17 +361,11 @@ def _generate_strategy(
     chunk: int = 512,
     is_pairwise: bool = False,
 ) -> Tuple[List[dict], int]:
-    """
-    Generate up to target pairs for one strategy.
-    Each transform gets its own independent cursor over a fresh shuffled pool.
-    Returns (pairs, n_filtered).
-    """
     pool = _make_pool(originals)
     candidates: List[dict] = []
     total_filtered = 0
 
     if is_pairwise:
-        # context_swap: pairs of originals
         i = 0
         while len(candidates) + total_filtered < target * 4 and i + 1 < len(pool):
             a, b = pool[i], pool[i + 1]
@@ -476,80 +392,97 @@ def _generate_strategy(
                     "strategy":   strategy_name,
                 })
 
-    # batch filter
     kept, n_rej = _filter_by_similarity(candidates, threshold=cos_threshold)
     total_filtered += n_rej
     return kept[:target], total_filtered
 
 
-# ── SWE-bench pairs ───────────────────────────────────────────────────────────
+# ── SWE-bench causal pairs ────────────────────────────────────────────────────
 
-_STRATEGY_TRIGGERS = {
-    "outcome_inversion": lambda t: bool(re.search(
-        r'\b(failed|passed|succeeded|completed|resolved|fixed|broke|crashed|'
-        r'timed out|rolled back|deployed|rejected)\b', t, re.IGNORECASE
-    )),
-    "step_number_swap": lambda t: bool(_STEP_RE.search(t)),
-    "causal_inversion": lambda t: bool(re.search(
-        r'\b(because|due to|caused by|triggered by|resulting from|after)\b', t, re.IGNORECASE
-    )),
-    "sentiment_flip": lambda t: bool(re.search(
-        r'\b(working|healthy|passing|clean|stable|valid|correct|successful|'
-        r'broken|failing|corrupted|unstable|invalid|incorrect|erroring|degraded)\b',
-        t, re.IGNORECASE
-    )),
-}
+_CAUSAL_TRIGGER_RE = re.compile(
+    r'\b(because|due to|caused by|triggered by|resulting from|after|'
+    r'when|which caused|so that|in order to|leading to|as a result|'
+    r'consequently|therefore|thus|hence)\b',
+    re.IGNORECASE,
+)
 
-_STRATEGY_FNS = {
-    "outcome_inversion": _transform_outcome_inversion,
-    "step_number_swap":  _transform_step_number_swap,
-    "causal_inversion":  _transform_causal_inversion,
-    "sentiment_flip":    _transform_sentiment_flip,
-}
+_FABRICATED_CLAUSES = [
+    "due to an unexpected state change",
+    "after the preceding step introduced a regression",
+    "because the prior action left the system in an inconsistent state",
+    "triggered by an earlier unresolved conflict",
+    "as a result of cascading failures from the previous operation",
+]
 
-def _generate_swebench(n: int, per_strategy: int) -> List[dict]:
+
+def _generate_swebench_causal(target: int) -> Tuple[List[dict], int]:
     from datasets import load_dataset
     ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
     problems = [row["problem_statement"] for row in ds if row.get("problem_statement")]
     random.shuffle(problems)
 
-    # extract sentences from problem statements
     sentences: List[str] = []
     for prob in problems:
         parts = [s.strip() for s in re.split(r'(?<=[.!?])\s+', prob) if len(s.split()) > 6]
         sentences.extend(p[:400] for p in parts)
     random.shuffle(sentences)
 
-    # route each sentence to strategies that will actually fire
-    buckets: dict = {s: [] for s in _STRATEGY_TRIGGERS}
-    for sent in sentences:
-        for strat, trigger in _STRATEGY_TRIGGERS.items():
-            if trigger(sent):
-                buckets[strat].append(sent)
+    enc = _enc()
+    candidates: List[dict] = []
+    rejected = 0
 
-    all_pairs: List[dict] = []
-    for strat, sents in buckets.items():
-        fn = _STRATEGY_FNS[strat]
-        candidates: List[dict] = []
-        for sent in sents:
-            result = fn(sent)
+    for sent in sentences:
+        if len(candidates) + rejected >= target * 4:
+            break
+
+        if _CAUSAL_TRIGGER_RE.search(sent):
+            # has causal language — apply inversion transform
+            result = _transform_causal_inversion(sent)
             if result and result != sent and len(result.split()) >= 3:
                 candidates.append({
                     "compressed": result,
                     "original":   sent,
                     "label":      "hard_negative",
-                    "strategy":   f"swebench_{strat}",
+                    "strategy":   "swebench_causal_inversion",
                 })
-            if len(candidates) >= per_strategy * 3:
-                break
-        kept, _ = _filter_by_similarity(candidates, threshold=0.90)
-        all_pairs.extend(kept[:per_strategy])
+        else:
+            # no causal language — try fabricated clauses, check each one
+            clauses = random.sample(_FABRICATED_CLAUSES, len(_FABRICATED_CLAUSES))
+            augmented = [f"{sent} {c}" for c in clauses]
+            # encode sent + all augmented variants in one call
+            all_texts = augmented + [sent]
+            embs = enc.encode(all_texts, batch_size=64, show_progress_bar=False,
+                              normalize_embeddings=True)
+            orig_emb = embs[-1]
+            found = False
+            for result, emb in zip(augmented, embs[:-1]):
+                sim = float(np.dot(emb, orig_emb))
+                if sim <= 0.90:
+                    candidates.append({
+                        "compressed": result,
+                        "original":   sent,
+                        "label":      "hard_negative",
+                        "strategy":   "swebench_causal_inversion",
+                        "_cos_sim":   sim,
+                    })
+                    found = True
+                    break
+            if not found:
+                rejected += len(clauses)
 
-    random.shuffle(all_pairs)
-    return all_pairs[:n]
+    # batch-filter the causal-inversion candidates (fabricated ones already checked)
+    to_filter = [p for p in candidates if "_cos_sim" not in p]
+    pre_checked = [p for p in candidates if "_cos_sim" in p]
+
+    filtered_causal, n_rej = _filter_by_similarity(to_filter, threshold=0.90)
+    rejected += n_rej
+
+    all_kept = pre_checked + filtered_causal
+    random.shuffle(all_kept)
+    return all_kept[:target], rejected
 
 
-# ── summary stats ─────────────────────────────────────────────────────────────
+# ── summary ───────────────────────────────────────────────────────────────────
 
 def _print_summary(pairs: List[dict], total_filtered: int) -> None:
     enc = _enc()
@@ -565,22 +498,27 @@ def _print_summary(pairs: List[dict], total_filtered: int) -> None:
         if not ps:
             return float("nan")
         if "_cos_sim" in ps[0]:
-            return float(np.mean([p["_cos_sim"] for p in ps]))
+            return float(np.mean([p["_cos_sim"] for p in ps if "_cos_sim" in p]))
         comps = [p["compressed"] for p in ps[:200]]
         origs = [p["original"]   for p in ps[:200]]
         ce = enc.encode(comps, normalize_embeddings=True, show_progress_bar=False)
         oe = enc.encode(origs, normalize_embeddings=True, show_progress_bar=False)
         return float(np.einsum("ij,ij->i", ce, oe).mean())
 
-    f_sim = avg_sim(faithful[:200])
+    f_sim  = avg_sim(faithful[:200])
     hn_sim = avg_sim(hard_neg[:200])
 
     print("\nstrategy breakdown:")
-    for strat in ["outcome_inversion", "step_number_swap", "causal_inversion",
-                  "sentiment_flip", "context_swap"] + \
-                 [k for k in by_strategy if k.startswith("swebench_")]:
+    for strat in ["causal_inversion", "context_swap", "swebench_causal_inversion"]:
         ps = by_strategy.get(strat, [])
-        s = avg_sim(ps) if ps else float("nan")
+        s  = avg_sim(ps) if ps else float("nan")
+        gap = f_sim - s if ps else float("nan")
+        print(f"  {strat:30s}  n={len(ps):4d}  avg_cos_sim={s:.4f}  gap={gap:+.4f}")
+
+    for strat in sorted(k for k in by_strategy if k not in
+                        {"causal_inversion", "context_swap", "swebench_causal_inversion"}):
+        ps = by_strategy[strat]
+        s  = avg_sim(ps) if ps else float("nan")
         gap = f_sim - s if ps else float("nan")
         print(f"  {strat:30s}  n={len(ps):4d}  avg_cos_sim={s:.4f}  gap={gap:+.4f}")
 
@@ -598,7 +536,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-faithful",      type=int, default=5000)
     parser.add_argument("--n-hard-negative", type=int, default=5000)
-    parser.add_argument("--swebench-pairs",  type=int, default=500)
+    parser.add_argument("--swebench-pairs",  type=int, default=1000)
     parser.add_argument("--out",             default="train/data/pairs_v3.jsonl")
     parser.add_argument("--seed",            type=int, default=42)
     args = parser.parse_args()
@@ -612,7 +550,6 @@ def main() -> None:
         out_path = out_path.with_name(f"{out_path.stem}_{ts}{out_path.suffix}")
         print(f"output exists — writing to {out_path}")
 
-    # load encoder up front
     _enc()
 
     print("building original event pool...")
@@ -623,19 +560,16 @@ def main() -> None:
     faithful = _generate_faithful(originals, args.n_faithful)
     print(f"  generated {len(faithful)}")
 
-    per_strategy = args.n_hard_negative // 5
-    total_filtered = 0
+    # 2000 causal_inversion + 2000 context_swap + swebench_pairs = n_hard_negative
+    synthetic_target = args.n_hard_negative - args.swebench_pairs
+    per_strategy     = synthetic_target // 2
+    total_filtered   = 0
     hard_neg: List[dict] = []
 
-    strategies = [
-        ("outcome_inversion", _transform_outcome_inversion, False),
-        ("step_number_swap",  _transform_step_number_swap,  False),
-        ("causal_inversion",  _transform_causal_inversion,  False),
-        ("sentiment_flip",    _transform_sentiment_flip,    False),
-        ("context_swap",      _transform_context_swap,      True),
-    ]
-
-    for name, fn, pairwise in strategies:
+    for name, fn, pairwise in [
+        ("causal_inversion", _transform_causal_inversion, False),
+        ("context_swap",     _transform_context_swap,     True),
+    ]:
         print(f"generating {per_strategy} {name} pairs...")
         pairs, n_rej = _generate_strategy(
             name, fn, originals, per_strategy,
@@ -645,14 +579,13 @@ def main() -> None:
         hard_neg.extend(pairs)
         print(f"  generated {len(pairs)}  filtered {n_rej}")
 
-    if args.swebench_pairs > 0:
-        print(f"generating {args.swebench_pairs} swebench pairs...")
-        sw = _generate_swebench(args.swebench_pairs, per_strategy=args.swebench_pairs // 4)
-        hard_neg.extend(sw)
-        print(f"  generated {len(sw)}")
+    print(f"generating {args.swebench_pairs} swebench_causal_inversion pairs...")
+    sw, n_rej = _generate_swebench_causal(args.swebench_pairs)
+    total_filtered += n_rej
+    hard_neg.extend(sw)
+    print(f"  generated {len(sw)}  filtered {n_rej}")
 
     all_pairs = faithful + hard_neg
-    # strip internal _cos_sim before writing
     for p in all_pairs:
         p.pop("_cos_sim", None)
     random.shuffle(all_pairs)
