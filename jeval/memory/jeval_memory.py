@@ -109,6 +109,7 @@ class JevalMemory:
         _caller=None,  # injectable for testing: any object with .call(prompt) -> str
         encoder=None,  # accept shared FrozenEncoder instance; avoids duplicate model load
         compressor=None,  # accept shared compressor with .compress(text, budget, anchors) -> str
+        classifier=None,  # accept shared ContentClassifier instance; avoids reloading NLI weights
     ):
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,12 +139,16 @@ class JevalMemory:
             caller = _caller or _NIMCaller()
             self._compressor = TimeoutCompressor(caller, timeout_seconds=3.0)
 
-        try:
-            self._classifier = ContentClassifier()
+        if classifier is not None:
+            self._classifier = classifier
             self._classifier_available = True
-        except Exception:
-            self._classifier = None
-            self._classifier_available = False
+        else:
+            try:
+                self._classifier = ContentClassifier()
+                self._classifier_available = True
+            except Exception:
+                self._classifier = None
+                self._classifier_available = False
 
     def _next_seq_id(self) -> int:
         self._seq_counter += 1

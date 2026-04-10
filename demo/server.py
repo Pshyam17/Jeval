@@ -18,6 +18,7 @@ _demo_dir = Path(__file__).parent
 _repo_root = _demo_dir.parent
 
 _encoder = None
+_classifier = None
 _memory = None
 _projector = None
 _compressor = None
@@ -157,16 +158,23 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.on_event("startup")
 async def startup():
-    global _encoder, _memory, _projector, _compressor, _bridge, _nim_ready
+    global _encoder, _classifier, _memory, _projector, _compressor, _bridge, _nim_ready
 
     from jeval.encoders.sentence_encoder import FrozenEncoder
     from jeval.memory.jeval_memory import JevalMemory
+    from jeval.strata.classifier import ContentClassifier
     from demo.umap_projector import UMAPProjector
     from demo.streaming_compressor import StreamingCompressor
     from demo.agent_bridge import AgentBridge
     from demo.data.seed_texts import SEED_TEXTS
 
     _encoder = FrozenEncoder()
+
+    # load NLI classifier once — reused across all replay loops
+    try:
+        _classifier = ContentClassifier()
+    except Exception:
+        _classifier = None
 
     _projector = UMAPProjector()
     _projector.seed_from_encoder(_encoder, SEED_TEXTS)
@@ -232,6 +240,7 @@ async def _run_bridge():
             session_id="demo_session_001",
             encoder=_encoder,
             compressor=_compressor if api_key else None,
+            classifier=_classifier,
         )
 
         replay_speed = float(os.environ.get("REPLAY_SPEED", "1.0"))
