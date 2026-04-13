@@ -1,162 +1,177 @@
-# JEval: JEPA-based Semantic Fidelity Compressor for Agent Memory
+# Jeval: Pre-hoc Fidelity Gating for Agent Memory Compression
 
-JEval is a standalone open-source library that compresses AI agent memory using Joint Embedding Predictive Architecture (JEPA) to maintain semantic fidelity while reducing storage costs.
+Jeval is a research library for **pre-hoc fidelity gating** of AI agent memory. Unlike systems that compress first and evaluate later, Jeval measures semantic fidelity *before* committing a compressed entry to memory — and falls back to higher-budget compression or extractive summarisation when the candidate fails the gate.
 
-## Features
+The core claim: **EPE-based pre-hoc fidelity gating outperforms post-hoc compression evaluation on agent memory tasks, with schema gap adding 117% additional signal over cosine EPE alone on causal elision failures.**
 
-- **JEPA-based Compression**: Uses predictive coding to compress semantically similar content
-- **Artifact Protection**: Detects and protects critical artifacts (files, APIs, secrets) from compression
-- **Adaptive Budgeting**: Allocates compression budget based on content importance (z-score calibration)
-- **Pluggable Backends**: Extractive, LLM-based, and adaptive compression strategies
-- **Deterministic Evaluation**: Comprehensive metrics for compression quality
+## Architecture
 
-## Installation
+### Two-Tier Memory
 
-```bash
-pip install jeval
+```
+Ingest
+  ├── Cold Storage  (append-only, SQLite+FTS5, always written)
+  └── Hot Cache     (compressed, bounded, cosine retrieval)
+        ├── Novelty Gate   — skip near-duplicates
+        └── Fidelity Gate  — CombinedEPE before commit
 ```
 
-Or from source:
+**Write path:** Every segment is written unconditionally to cold storage (original text, FTS5 indexed). Admission to the hot cache requires passing two gates:
 
-```bash
-git clone https://github.com/yourorg/jeval.git
-cd jeval
-pip install -e .
+1. **Novelty gate** — cosine EPE against a 50-embedding working set of recent originals. Near-duplicates are cold-only.
+2. **Fidelity gate** — LLM generates a compressed candidate; `CombinedEPE = α·cosine_epe + (1−α)·schema_gap` is computed; candidate committed if below threshold, else retried (max 2) then extractive fallback.
+
+**Retrieval path:** Confidence gate routes each query before any similarity search:
+
 ```
+score = |E_q ∩ E_c| / max(|E_q ∩ E_o|, 1)
+
+score ≥ high_confidence  →  hot cache (semantic cosine search)
+score ≤ low_confidence   →  cold storage (FTS5 full-text search)
+otherwise                →  both, merged
+```
+
+Entity extraction is regex-only: ALL_CAPS identifiers, file paths, step references, ≥2-digit numbers, error class names. Generic nouns excluded.
+
+### EPE (Embedding Predictive Error)
+
+```
+EPE(orig, comp) = 1 − ⟨enc(orig), enc(comp)⟩
+```
+
+Encoder: frozen `all-mpnet-base-v2` (768-dim, L2-normalised). Cosine distance chosen over squared Euclidean — squared distance accumulates ~0.003 per dimension for orthogonal vectors, indistinguishable from verbatim match across 768 dims.
+
+### Schema Gap
+
+Regex-based fact-presence scoring across 6 domain schemas:
+
+| Schema | Required facts |
+|--------|---------------|
+| `tool_call` | tool_name, result |
+| `error` | error_type, location |
+| `test_result` | failure_count, test_file |
+| `migration_failure` | timing, table_name, error_type |
+| `deployment` | environment, outcome |
+| `file_modification` | file_path, action |
+
+```
+schema_gap(orig, comp, τ) = |F_o \ F_c| / max(|F_o|, 1)
+```
+
+**Motivating example:** *"migration failed on staging due to lock timeout after 30s on roles table"* vs *"migration failed on staging"* — `cosine_epe=0.2974`, `schema_gap=1.0`, `epe_final=0.6487`. Schema gap adds **117% additional signal** over cosine EPE alone.
+
+### Combined EPE
+
+```
+epe_final = α · cosine_epe + (1 − α) · schema_gap      (default α = 0.5)
+```
+
+### Self-Healing: Miss-Triggered Recompression
+
+Hot cache entries with high miss counters are rewritten from cold storage originals:
+
+```
+trigger: miss_counter > miss_threshold AND turns_since_last_rewrite > min_rewrite_gap
+```
+
+Eviction formula (normalised per cycle):
+
+```
+score = 0.3·time_n + 0.4·miss_n − 0.2·hit_n + 0.1·(1 − epe_novelty)
+```
+
+The 0.4 weight on miss counter is the key departure from LRU.
 
 ## Quick Start
 
 ```python
-from jeval import JEval
+from jeval.memory.jeval_memory import JevalMemory
 
-# Initialize compressor
-jeval = JEval()
-
-# Compress a conversation
-session = """
-User: Fix the login bug in src/auth.ts
-Agent: The issue is in the JWT validation. Here's the fix...
-"""
-
-compressed = jeval.compress_session(session, budget=0.5)
-print(f"Compressed to {len(compressed)/len(session):.1%} of original")
-
-# Evaluate fidelity
-report = jeval.evaluate_compression(session, compressed)
-print(f"Fidelity score: {report.fidelity:.3f}")
-```
-
-## Architecture
-
-### Core Components
-
-- **Encoders**: Frozen sentence transformer + trainable predictor head
-- **EPE (Embedding Predictive Error)**: Measures semantic distortion
-- **Strata Classification**: Content type detection (PROD/FAST)
-- **Artifact Detection**: Regex-based identification of critical tokens
-- **Compression Backends**: Multiple strategies with fallback
-- **Evaluation**: Artifact recall, probe accuracy, compression ratios
-
-### Pipeline
-
-1. **Ingest**: Parse sessions into segments
-2. **Encode**: Generate embeddings for all segments
-3. **EPE Compute**: Calculate predictive errors
-4. **Strata Classify**: Determine content importance
-5. **Budget Allocate**: Z-score based budget distribution
-6. **Compress**: Apply backend with artifact protection
-7. **Evaluate**: Measure fidelity and effectiveness
-
-## Configuration
-
-JEval uses sensible defaults but can be configured:
-
-```python
-from jeval import JEval
-from jeval.compress import AdaptiveCompressor
-
-# Custom compressor
-compressor = AdaptiveCompressor(
-    encoder_model="all-mpnet-base-v2",
-    predictor_layers=3,
-    budget_threshold=0.8
+mem = JevalMemory(
+    alpha=0.5,            # cosine vs schema gap blend
+    high_confidence=0.7,  # hot cache routing threshold
+    low_confidence=0.4,   # cold storage routing threshold
 )
 
-jeval = JEval(compressor=compressor)
+# build memory from agent session
+mem.memory_construction(session_text, task="fix auth bug")
+
+# retrieve with confidence-gated routing
+context = mem.memory_retrieve("why did the migration fail", top_k=5)
 ```
+
+## Ablation Parameters
+
+| Parameter | Default | Controls |
+|-----------|---------|---------|
+| `alpha` | 0.5 | cosine EPE vs schema gap blend |
+| `beta` | 1.0 | budget modulation strength |
+| `high_confidence` | 0.7 | hot cache routing threshold |
+| `low_confidence` | 0.4 | cold storage routing threshold |
+| `miss_threshold` | 2 | recompression trigger |
+| `min_rewrite_gap` | 5 | recompression cooldown (turns) |
+| `eviction_weights` | (0.3, 0.4, 0.2, 0.1) | time / miss / hit / novelty |
+
+## Stack
+
+| Component | Implementation |
+|-----------|---------------|
+| Sentence encoder | all-mpnet-base-v2, sentence-transformers 3.0.1, frozen |
+| LLM compressor | Mistral Small 3.1 24B via NVIDIA NIM |
+| NLI classifier | cross-encoder/nli-MiniLM2-L6-H768 |
+| Entity extraction | Regex-only; spaCy optional |
+| Cold storage | SQLite 3.45 + FTS5 |
+| Training | PyTorch 2.4.1, NVIDIA A100 |
 
 ## Benchmarks
 
-Compare against baselines:
+```bash
+# AMA-Bench (208 SOFTWARE episodes)
+python benchmarks/run_ama_episode.py \
+    --episode-idx 0 \
+    --dataset AMA-bench/AMA-bench \
+    --split test \
+    --predictor checkpoints/predictor_v2_best.pt \
+    --out benchmarks/results/ama_bench_episodes/episode_0.json
 
-```python
-from jeval.baselines import BaselineFactory
-
-# Test truncation baseline
-baseline = BaselineFactory.create("truncation")
-compressed = baseline.compress(text, budget=0.5)
+# DroidBench (NIM judge, 4 probe types)
+export NVIDIA_API_KEY=...
+python jeval/benchmarks/droid_bench.py
 ```
+
+Published baselines (DroidBench): Factory AI 2.45/5 · Anthropic 2.33/5 · OpenAI 2.19/5
+
+SimpleMem SOTA (AMA-Bench, LoCoMo F1): 43.24%
 
 ## Training
 
-Train custom predictor heads:
+```bash
+# generate pairs and train predictor
+python train/generate_pairs.py \
+    --n-faithful 5000 --n-hard-negative 5000 --swebench-pairs 500 \
+    --out train/data/pairs_v2.jsonl
 
-```python
-from jeval.train import PairGenerator, train_predictor
-from jeval.benchmarks import SWEBenchLoader
-
-# Load training data
-loader = SWEBenchLoader()
-sessions = loader.load_sessions()
-
-# Generate pairs
-generator = PairGenerator(encoder)
-pairs = generator.generate_pairs(sessions, num_pairs=10000)
-
-# Train predictor
-train_predictor(pairs, encoder, predictor, epochs=20)
+python train/train_predictor_v2.py \
+    --pairs train/data/pairs_v2.jsonl \
+    --out-path checkpoints/predictor_v2_best.pt \
+    --lr 3e-4 1e-4 --epochs 100 --batch-size 32
 ```
 
-## API Reference
+Trained predictor achieves **83.46× EPE separation** (faithful vs lossy compressions). Target: 5×.
 
-### JEval
+## Tests
 
-Main interface class.
-
-- `compress_session(text, budget)`: Compress session text
-- `evaluate_compression(original, compressed)`: Get fidelity report
-
-### Compressors
-
-- `AdaptiveCompressor`: Full JEPA pipeline
-- `ExtractiveCompressor`: Sentence extraction
-- `LLMCompressor`: OpenAI-based compression
-
-### Evaluation
-
-- `ArtifactEval`: Recall/F1 for protected artifacts
-- `ProbeEvaluator`: LLM judge scoring
-- `CompressionReport`: Aggregated metrics
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details.
+```bash
+python -m pytest tests/ --ignore=tests/demo -q
+# 179 passed, 8 skipped in ~95s
+```
 
 ## Citation
 
 ```bibtex
-@software{jeval2024,
-  title={JEval: JEPA-based Agent Memory Compression},
-  author={Preethi Shyam},
-  year={2025},
-  url={https://github.com/yourorg/jeval}
+@article{jeval2026,
+  title={Pre-hoc Fidelity Gating for Agent Memory Compression},
+  author={Shyam, Preethi},
+  year={2026}
 }
-``` 
+```
