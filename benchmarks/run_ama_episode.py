@@ -156,7 +156,7 @@ def run_episode(
 
     # Build memory — pass trained predictor if available
     predictor = _load_predictor(predictor_path)
-    mem = JevalMemory(k=5)
+    mem = JevalMemory()
     if predictor is not None:
         mem.compressor = AdaptiveCompressor(
             predictor=predictor,

@@ -32,6 +32,15 @@ module load miniconda3/24.11.1
 
 export PYTHONPATH="$WORKDIR:$PYTHONPATH"
 export TOKENIZERS_PARALLELISM=false
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
+if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f "$HOME/.jeval_secrets" ]; then
+    source "$HOME/.jeval_secrets"
+fi
+if [ -z "${NVIDIA_API_KEY:-}" ]; then
+    echo "ERROR: NVIDIA_API_KEY not set" >&2; exit 1
+fi
 
 echo "=== episode $IDX  node=$SLURMD_NODENAME  start=$(date) ==="
 

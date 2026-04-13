@@ -1,6 +1,6 @@
 #!/bin/bash
 # polls sinfo every POLL_SEC until a gpu node goes idle, then submits the
-# full train -> ama array -> aggregate pipeline and exits
+# full train -> ama_array -> aggregate -> droid_bench pipeline and exits
 # run with: nohup bash slurm/watch_and_grab.sh > logs/watcher.log 2>&1 &
 
 set -euo pipefail
@@ -34,7 +34,7 @@ find_idle_tier() {
 }
 
 log "watcher started — polling every ${POLL_SEC}s for idle gpu node"
-log "will submit: train -> ama_bench_array -> aggregate"
+log "will submit: train -> ama_bench_array -> aggregate + droid_bench"
 
 cd "$WORKDIR"
 
@@ -59,7 +59,18 @@ while true; do
             slurm/aggregate_ama_results.sh)
         log "aggregate submitted: $AGG_JID (depends on $AMA_JID)"
 
-        log "pipeline queued: train=$TRAIN_JID  array=$AMA_JID  agg=$AGG_JID"
+        # droid_bench runs independently of the AMA pipeline (no GPU needed, NIM-only)
+        DROID_JID=$(sbatch --parsable \
+            --account=cs6140.202630 \
+            --dependency=afterok:"$TRAIN_JID" \
+            slurm/droid_bench.sh)
+        log "droid_bench submitted: $DROID_JID (depends on $TRAIN_JID)"
+
+        log "pipeline queued:"
+        log "  train=$TRAIN_JID"
+        log "  ama_array=$AMA_JID  (→ train)"
+        log "  aggregate=$AGG_JID  (→ ama_array)"
+        log "  droid=$DROID_JID    (→ train, parallel with ama_array)"
         log "watcher done — exiting"
         exit 0
     fi

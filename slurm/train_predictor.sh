@@ -21,6 +21,8 @@ module load miniconda3/24.11.1
 
 export PYTHONPATH="$WORKDIR:$PYTHONPATH"
 export TOKENIZERS_PARALLELISM=false
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 
 PAIRS="train/data/pairs_v2.jsonl"
 if [ ! -f "$PAIRS" ]; then
