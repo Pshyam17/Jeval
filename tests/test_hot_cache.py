@@ -5,11 +5,6 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.memory.hot_cache import HotCache
 
 
-@pytest.fixture(scope="module")
-def encoder():
-    return FrozenEncoder()
-
-
 @pytest.fixture
 def cache(encoder):
     return HotCache(encoder, token_ceiling=500, top_k=3)

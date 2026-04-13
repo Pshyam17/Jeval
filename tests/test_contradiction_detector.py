@@ -6,11 +6,6 @@ from jeval.memory.hot_cache import HotCache
 from jeval.memory.contradiction_detector import ContradictionDetector
 
 
-@pytest.fixture(scope="module")
-def encoder():
-    return FrozenEncoder()
-
-
 @pytest.fixture
 def setup(encoder):
     cache = HotCache(encoder, token_ceiling=8000)

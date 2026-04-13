@@ -3,11 +3,6 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.memory.novelty_gate import NoveltyGate
 
 
-@pytest.fixture(scope="module")
-def encoder():
-    return FrozenEncoder()
-
-
 @pytest.fixture
 def gate(encoder):
     return NoveltyGate(encoder, threshold=0.15, working_set_size=5)
