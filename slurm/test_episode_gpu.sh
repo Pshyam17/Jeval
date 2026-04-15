@@ -31,7 +31,7 @@ module load cuda/12.3 2>/dev/null || true
 
 # venv from slurm/install_vllm.sh (scratch or $HOME/scratch) — never rely on login pip
 _JEVAL_VENV_ROOT="${SCRATCH:-$HOME/scratch}"
-_JEVAL_VENV="${JEVAL_VENV:-$_JEVAL_VENV_ROOT/jeval-gpu-venv}"
+_JEVAL_VENV="${JEVAL_VENV:-$_JEVAL_VENV_ROOT/venvs/vllm}"
 if [ -f "$_JEVAL_VENV/bin/activate" ]; then
   # shellcheck source=/dev/null
   source "$_JEVAL_VENV/bin/activate"

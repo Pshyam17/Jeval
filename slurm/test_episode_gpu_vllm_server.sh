@@ -10,7 +10,7 @@
 #   sbatch --export=ALL,JEVAL_VENV=/scratch/.../venvs/vllm,JEVAL_VLLM_MODEL_ID=mistralai/Mistral-Small-3.1-24B-Instruct-2503 slurm/test_episode_gpu_vllm_server.sh
 #
 #SBATCH --job-name=jeval-ep0-vllm
-#SBATCH --account=cs6140.202630
+# Omit --account to use your Slurm default (smart_submit.sh may pass --account).
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -23,31 +23,51 @@
 
 set -euo pipefail
 
-WORKDIR="${HOME}/jeval/Jeval-1"
-REAL_HOME="$HOME"
+REAL_HOME="${HOME}"
+# Explorer: use /scratch/$USER when $SCRATCH is unset in the batch environment.
+SCRATCH_ROOT="${JEVAL_SCRATCH:-${SCRATCH:-/scratch/${USER}}}"
+
+# Repo root: explicit override, else ~/jeval/Jeval-1, else scratch checkout.
+if [ -n "${JEVAL_WORKDIR:-}" ]; then
+  WORKDIR="$JEVAL_WORKDIR"
+elif [ -d "${REAL_HOME}/jeval/Jeval-1" ]; then
+  WORKDIR="${REAL_HOME}/jeval/Jeval-1"
+else
+  WORKDIR="${SCRATCH_ROOT}/Jeval-scratch"
+fi
+
 cd "$WORKDIR"
-mkdir -p logs benchmarks/results/ama_bench_episodes
+mkdir -p logs benchmarks/results/ama_bench_episodes checkpoints
 
 module purge
 module load miniconda3/24.11.1
 module load cuda/12.3 2>/dev/null || true
 
-# Activate venv (prefer explicit JEVAL_VENV; fallback to scratch default)
-_JEVAL_VENV_ROOT="${SCRATCH:-$HOME/scratch}"
-_JEVAL_VENV="${JEVAL_VENV:-$_JEVAL_VENV_ROOT/jeval-gpu-venv}"
-if [ ! -f "$_JEVAL_VENV/bin/activate" ]; then
-  echo "ERROR: venv not found at $_JEVAL_VENV" >&2
+# Activate venv (prefer explicit JEVAL_VENV; probe known install locations)
+if [ -n "${JEVAL_VENV:-}" ]; then
+  _JEVAL_VENV="$JEVAL_VENV"
+elif [ -f "${REAL_HOME}/scratch/jeval-gpu-venv/bin/activate" ]; then
+  _JEVAL_VENV="${REAL_HOME}/scratch/jeval-gpu-venv"
+elif [ -f "${SCRATCH_ROOT}/jeval-gpu-venv/bin/activate" ]; then
+  _JEVAL_VENV="${SCRATCH_ROOT}/jeval-gpu-venv"
+elif [ -f "${SCRATCH_ROOT}/venvs/vllm/bin/activate" ]; then
+  _JEVAL_VENV="${SCRATCH_ROOT}/venvs/vllm"
+else
+  echo "ERROR: venv not found. Tried:" >&2
+  echo "  ${REAL_HOME}/scratch/jeval-gpu-venv" >&2
+  echo "  ${SCRATCH_ROOT}/jeval-gpu-venv" >&2
+  echo "  ${SCRATCH_ROOT}/venvs/vllm" >&2
+  echo "Set JEVAL_VENV explicitly or run: sbatch slurm/install_vllm.sh" >&2
   exit 1
 fi
 source "$_JEVAL_VENV/bin/activate"
 
-# Keep caches on scratch to avoid home quota and speed up repeated runs.
-export HOME="${SCRATCH:-$REAL_HOME/scratch}"
-export XDG_CACHE_HOME="${HOME}/.cache"
-export HF_HOME="${HOME}/.cache/huggingface"
+# HuggingFace / torch caches on scratch (do not override $HOME — breaks tools that expect ~/.ssh etc.)
+export XDG_CACHE_HOME="${SCRATCH_ROOT}/.cache"
+export HF_HOME="${XDG_CACHE_HOME}/huggingface"
 export TRANSFORMERS_CACHE="${HF_HOME}"
-export TRITON_CACHE_DIR="${HOME}/.cache/triton"
-export TORCH_HOME="${HOME}/.cache/torch"
+export TRITON_CACHE_DIR="${XDG_CACHE_HOME}/triton"
+export TORCH_HOME="${XDG_CACHE_HOME}/torch"
 mkdir -p "$XDG_CACHE_HOME" "$HF_HOME" "$TRITON_CACHE_DIR" "$TORCH_HOME"
 
 export NO_PROXY=localhost,127.0.0.1
@@ -58,14 +78,37 @@ export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 
-MODEL_PATH="${JEVAL_VLLM_MODEL_PATH:-$REAL_HOME/.cache/huggingface/models--mistralai--Mistral-Small-3.1-24B-Instruct-2503/snapshots/68faf511d618ef198fef186659617cfd2eb8e33a}"
 MODEL_ID="${JEVAL_VLLM_MODEL_ID:-mistralai/Mistral-Small-3.1-24B-Instruct-2503}"
+# Known snapshot (pinned hash from original download)
+_SNAP_HASH="68faf511d618ef198fef186659617cfd2eb8e33a"
+# Check both $HOME/.cache (where the model was originally downloaded) and $SCRATCH_ROOT/.cache
+_HOME_LEGACY="${REAL_HOME}/.cache/huggingface/models--mistralai--Mistral-Small-3.1-24B-Instruct-2503/snapshots/${_SNAP_HASH}"
+_HOME_HUB="${REAL_HOME}/.cache/huggingface/hub/models--mistralai--Mistral-Small-3.1-24B-Instruct-2503"
+_SCRATCH_LEGACY="${HF_HOME}/models--mistralai--Mistral-Small-3.1-24B-Instruct-2503/snapshots/${_SNAP_HASH}"
+_SCRATCH_HUB="${HF_HOME}/hub/models--mistralai--Mistral-Small-3.1-24B-Instruct-2503"
+
+if [ -n "${JEVAL_VLLM_MODEL_PATH:-}" ]; then
+  MODEL_PATH="$JEVAL_VLLM_MODEL_PATH"
+elif [ -d "$_HOME_LEGACY" ]; then
+  MODEL_PATH="$_HOME_LEGACY"
+elif [ -d "$_HOME_HUB/snapshots" ]; then
+  MODEL_PATH="$(find "$_HOME_HUB/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+elif [ -d "$_SCRATCH_LEGACY" ]; then
+  MODEL_PATH="$_SCRATCH_LEGACY"
+elif [ -d "$_SCRATCH_HUB/snapshots" ]; then
+  MODEL_PATH="$(find "$_SCRATCH_HUB/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+else
+  MODEL_PATH=""
+fi
+
 PORT="${JEVAL_VLLM_PORT:-$((9000 + SLURM_JOB_ID % 1000))}"
 MAX_LEN="${JEVAL_VLLM_MAX_LEN:-8192}"
 OUT="benchmarks/results/ama_bench_episodes/episode_0_gpu_test.json"
 
-if [ ! -d "$MODEL_PATH" ]; then
-  echo "ERROR: model snapshot not found: $MODEL_PATH" >&2
+if [ -z "$MODEL_PATH" ] || [ ! -d "$MODEL_PATH" ]; then
+  echo "ERROR: Mistral Small3.1 24B snapshot not found." >&2
+  echo "  Expected under: ${_HUB_DIR}/snapshots/<hash>/" >&2
+  echo "  Download on HPC: sbatch slurm/download_hf_mistral_small_3.1_24b.sh" >&2
   exit 1
 fi
 
@@ -101,6 +144,9 @@ setsid vllm serve "$MODEL_PATH" \
   --port "$PORT" \
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization 0.90 \
+  --tokenizer-mode mistral \
+  --config-format mistral \
+  --load-format mistral \
   "${EXTRA_FLAGS[@]}" >"$LOG_VLLM" 2>&1 &
 VLLM_PID=$!
 
@@ -140,11 +186,17 @@ export JEVAL_NIM_BASE_URL="http://127.0.0.1:${PORT}/v1"
 export JEVAL_NIM_MODEL="$MODEL_ID"
 export NVIDIA_API_KEY="${NVIDIA_API_KEY:-local-vllm}"
 
+_PRED="${JEVAL_PREDICTOR:-checkpoints/predictor_v2_best.pt}"
+_PRED_ARG=( )
+if [ -f "$_PRED" ]; then
+  _PRED_ARG=(--predictor "$_PRED")
+fi
+
 python3 benchmarks/run_ama_episode.py \
   --episode-idx 0 \
   --dataset AMA-bench/AMA-bench \
   --split test \
-  --predictor checkpoints/predictor_v2_best.pt \
+  "${_PRED_ARG[@]}" \
   --out "$OUT"
 
 echo "=== Test Complete: $(date) ==="

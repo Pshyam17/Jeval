@@ -74,7 +74,13 @@ IFS='|' read -r PART GRES LABEL <<< "$BEST"
 echo "[smart_submit] gpu: $LABEL  partition=$PART  gres=$GRES" >&2
 echo "[smart_submit] → sbatch ${SBATCH_PASSTHROUGH[*]:-} --partition=$PART --gres=$GRES $TARGET ${EXTRA[*]:-}" >&2
 
-sbatch --account=cs6140.202630 \
+# Optional: export JEVAL_SLURM_ACCOUNT=... when your default Slurm account is wrong.
+_SBATCH_ACCOUNT=()
+if [ -n "${JEVAL_SLURM_ACCOUNT:-}" ]; then
+  _SBATCH_ACCOUNT=(--account="${JEVAL_SLURM_ACCOUNT}")
+fi
+
+sbatch "${_SBATCH_ACCOUNT[@]}" \
        --partition="$PART" \
        --gres="$GRES" \
        "${SBATCH_PASSTHROUGH[@]+"${SBATCH_PASSTHROUGH[@]}"}" \
