@@ -10,11 +10,14 @@ ACCOUNT="cs6140.202630"
 LOG="$WORKDIR/logs/srun_loop.log"
 ATTEMPT=0
 
-# gpu tiers to try in order
+# gpu tiers to try in order (best → fallback)
 TIERS=(
     "gpu|gpu:h200:1"
+    "gpu|gpu:h100:1"
     "gpu|gpu:a100:1"
     "gpu-short|gpu:a100:1"
+    "gpu|gpu:l40s:1"
+    "gpu|gpu:l40:1"
     "gpu|gpu:v100:1"
 )
 

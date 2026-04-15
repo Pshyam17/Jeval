@@ -20,16 +20,22 @@ if [ -z "$TARGET" ]; then
     exit 1
 fi
 
-# tiers ordered best→worst: idle beats mix, h200 beats a100 beats v100
-# format: partition|gres|sinfo_grep|label
+# tiers ordered best→worst: idle beats mix; GPU class priority matches Explorer inventory
+# (H200 → H100 → A100 → L40S/L40 → V100 → any). format: partition|gres|sinfo_grep|label
 TIERS=(
     "gpu|gpu:h200:1|h200|H200-idle"
+    "gpu|gpu:h100:1|h100|H100-idle"
     "gpu|gpu:a100:1|a100|A100-idle"
     "gpu-short|gpu:a100:1|a100|A100-short-idle"
+    "gpu|gpu:l40s:1|l40s|L40S-idle"
+    "gpu|gpu:l40:1|l40|L40-idle"
     "gpu|gpu:v100:1|v100|V100-idle"
     "gpu|gpu:h200:1|h200|H200-mix"
+    "gpu|gpu:h100:1|h100|H100-mix"
     "gpu|gpu:a100:1|a100|A100-mix"
     "gpu-short|gpu:a100:1|a100|A100-short-mix"
+    "gpu|gpu:l40s:1|l40s|L40S-mix"
+    "gpu|gpu:l40:1|l40|L40-mix"
     "gpu|gpu:v100:1|v100|V100-mix"
     "gpu|gpu:1|gpu|any-GPU"
 )

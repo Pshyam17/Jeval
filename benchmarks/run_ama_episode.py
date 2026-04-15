@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from jeval import config
 from jeval.benchmarks.ama_bench_eval import (
     ANSWER_PROMPT,
     JUDGE_PROMPT,
@@ -40,23 +41,18 @@ from jeval.benchmarks.ama_bench_eval import (
 from jeval.compress.adaptive import AdaptiveCompressor
 from jeval.compress.extractive import ExtractiveBackend
 
-_MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
-
 
 # ── NIM client with retry ─────────────────────────────────────────────────────
 
 def _client() -> OpenAI:
-    return OpenAI(
-        api_key=os.environ["NVIDIA_API_KEY"],
-        base_url="https://integrate.api.nvidia.com/v1",
-    )
+    return config.get_nim_client()
 
 
 def _complete(client: OpenAI, prompt: str, max_tokens: int = 512) -> str:
     for attempt in range(3):
         try:
             resp = client.chat.completions.create(
-                model=_MODEL,
+                model=config.NIM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=0.1,
@@ -166,21 +162,26 @@ def run_episode(
 
     compressed_tokens = len(mem.full_memory.split())
     compression_ratio = compressed_tokens / max(orig_tokens, 1)
+    print(f"Compression complete: {orig_tokens} → {compressed_tokens} tokens (ratio={compression_ratio:.2f})", flush=True)
 
     client = _client()
     per_question: List[dict] = []
     scores: List[float] = []
 
-    for qa in qas:
+    print(f"Processing {len(qas)} QA pairs...", flush=True)
+    for i, qa in enumerate(qas):
         question   = qa["question"]
         reference  = qa["answer"]
         qa_type    = qa.get("type", "")
         q_uuid     = qa.get("question_uuid", "")
 
+        print(f"  Q{i+1}/{len(qas)}: answering...", flush=True)
         answer          = _answer(client, mem, question, task)
+        print(f"  Q{i+1}/{len(qas)}: judging...", flush=True)
         correct, reason = _judge(client, question, reference, answer)
         score           = 1.0 if correct else 0.0
         scores.append(score)
+        print(f"  Q{i+1}/{len(qas)}: score={score} ({'✓' if correct else '✗'})", flush=True)
 
         per_question.append({
             "question_uuid": q_uuid,

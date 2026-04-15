@@ -5,6 +5,7 @@ from typing import Optional
 
 from jeval.compress.base import CompressorBackend
 from jeval.compress.extractive import ExtractiveBackend
+from jeval import config
 
 try:
     from openai import OpenAI
@@ -12,10 +13,6 @@ try:
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
     _openai = None  # type: ignore[assignment]
-
-# NVIDIA NIM endpoint — swap base_url to use OpenAI or any OAI-compatible provider
-_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-_NIM_MODEL    = "mistralai/mistral-small-3.1-24b-instruct-2503"
 
 
 class LLMBackend(CompressorBackend):
@@ -34,11 +31,18 @@ class LLMBackend(CompressorBackend):
 
     def __init__(
         self,
-        base_url: Optional[str] = _NIM_BASE_URL,
-        model: str = _NIM_MODEL,
-        api_key_env: str = "NVIDIA_API_KEY",
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key_env: str = None,
         api_key: Optional[str] = None,
     ):
+        # Use config defaults if not specified
+        if base_url is None:
+            base_url = config.NIM_BASE_URL
+        if model is None:
+            model = config.NIM_MODEL
+        if api_key_env is None:
+            api_key_env = config.NIM_API_KEY_ENV
         self.base_url = base_url
         self.model = model
         self.api_key = api_key or os.getenv(api_key_env)

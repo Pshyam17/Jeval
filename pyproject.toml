@@ -41,6 +41,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["black", "ruff", "isort", "mypy", "pre-commit"]
+# GPU AMA-bench local runner (`benchmarks/run_ama_episode_local.py` with JEVAL_LOCAL_LLM_BACKEND=vllm).
+# Pin vLLM to a release compatible with your CUDA + torch wheels (cluster-specific).
+benchmark-gpu = ["vllm>=0.6.0", "openai>=1.0.0", "datasets>=2.14.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
