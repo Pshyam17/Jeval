@@ -27,6 +27,7 @@ htmlcov/
 
 # Generated outputs — never commit results or logs
 logs/
+zzz/
 checkpoints/
 train/data/
 benchmarks/results/
