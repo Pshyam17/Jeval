@@ -20,10 +20,10 @@ CLASSIFIER_MODEL_FAST = "cross-encoder/nli-MiniLM2-L6-H768"  # Default: fast
 CLASSIFIER_MODEL_PROD = "cross-encoder/nli-deberta-v3-large"  # Prod: accurate but slow
 
 # LLM for compression and judging (NIM or local)
-# NIM (API-based)
-NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NIM_MODEL = "mistralai/mistral-small-4-119b-2603"  # Updated 2026-04-15
-NIM_API_KEY_ENV = "NVIDIA_API_KEY"
+# NIM (API-based) or local OpenAI-compatible endpoint (e.g., vLLM server)
+NIM_BASE_URL = os.getenv("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NIM_MODEL = os.getenv("JEVAL_NIM_MODEL", "mistralai/mistral-small-4-119b-2603")  # Updated 2026-04-15
+NIM_API_KEY_ENV = os.getenv("JEVAL_NIM_API_KEY_ENV", "NVIDIA_API_KEY")
 
 # Local inference (HPC cached model)
 # Set LOCAL_MODEL_PATH to use local inference instead of NIM API
