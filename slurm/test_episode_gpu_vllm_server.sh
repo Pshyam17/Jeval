@@ -144,9 +144,7 @@ setsid vllm serve "$MODEL_PATH" \
   --port "$PORT" \
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization 0.90 \
-  --tokenizer-mode mistral \
-  --config-format mistral \
-  --load-format mistral \
+  --limit-mm-per-prompt image=0 \
   "${EXTRA_FLAGS[@]}" >"$LOG_VLLM" 2>&1 &
 VLLM_PID=$!
 
