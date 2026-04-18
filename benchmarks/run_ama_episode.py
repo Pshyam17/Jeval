@@ -37,8 +37,7 @@ from jeval.benchmarks.ama_bench_eval import (
     JevalMemory,
     trajectory_to_session,
 )
-from jeval.compress.adaptive import AdaptiveCompressor
-from jeval.compress.extractive import ExtractiveBackend
+from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
 _MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
 
@@ -155,13 +154,13 @@ def run_episode(
     traj_text = "\n".join(traj_lines)
 
     # Build memory — pass trained predictor if available
+    # v2.0: Uses full memory pipeline with novelty gate, fidelity gate,
+    # confidence-gated retrieval, and miss-triggered recompression
     predictor = _load_predictor(predictor_path)
-    mem = JevalMemory()
-    if predictor is not None:
-        mem.compressor = AdaptiveCompressor(
-            predictor=predictor,
-            backend=ExtractiveBackend(),
-        )
+    mem = JevalMemory(
+        predictor=predictor,
+        backend=ExtractiveBackend() if predictor is None else None,
+    )
     mem.memory_construction(traj_text, task=task)
 
     compressed_tokens = len(mem.full_memory.split())
