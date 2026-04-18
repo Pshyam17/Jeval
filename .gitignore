@@ -39,3 +39,6 @@ dataset/.cache/
 
 # Claude Code internal
 .claude/
+
+# Runtime data
+.jeval/
