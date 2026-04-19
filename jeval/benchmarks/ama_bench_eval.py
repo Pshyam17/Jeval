@@ -41,12 +41,13 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.ingest.base import Segment, Session
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_ANSWER_MODEL = os.environ.get(
-    "JEVAL_ANSWER_MODEL",
-    "qwen/qwen3.5-122b-a10b",
-)
+# Fair comparison defaults (AMA-Agent parity: Qwen3-32B backbone)
+# Override via environment: export JEVAL_ANSWER_MODEL=qwen/qwen3.5-122b-a10b
+_ANSWER_MODEL = os.environ.get("JEVAL_ANSWER_MODEL", "qwen/qwen3.5-122b-a10b")
 _JUDGE_MODEL = os.environ.get("JEVAL_JUDGE_MODEL", "qwen/qwen3.5-122b-a10b")
-_DOMAINS = ["Game", "EMBODIED_AI", "OPENWORLD_QA", "TEXT2SQL", "SOFTWARE", "WEB"]
+
+# AMA-Bench official domains (case-sensitive as in dataset)
+_DOMAINS = ["SOFTWARE", "Game", "EMBODIED_AI", "OPENWORLD_QA", "TEXT2SQL", "WEB"]
 
 
 # ── NIM client ────────────────────────────────────────────────────────────────
@@ -527,6 +528,7 @@ def run_eval(
         for row in jsonl_rows:
             f.write(json.dumps(row) + "\n")
 
+    # Fair comparison reporting (architecture_v3.md §3.3)
     summary = {
         "domain": domain,
         "episodes": len(results),
@@ -535,14 +537,26 @@ def run_eval(
         "baseline_accuracy": sum(all_baseline) / max(len(all_baseline), 1) if all_baseline else None,
         "avg_token_reduction": avg_red,
         "by_type": {t: sum(v)/len(v) for t, v in by_type.items()},
-        "simplemem_f1_sota": 43.24,
+        # Fair comparison checklist (architecture_v3.md §3.3)
+        "fair_comparison_config": {
+            "answer_model": _ANSWER_MODEL,
+            "judge_model": _JUDGE_MODEL,
+            "embedding_model": encoder_model,
+            "retrieval_k": 5,
+            "split": "test",
+            "domain_scope": domain,
+            "frozen_mode": True,  # Default for benchmarking
+            "predictor_checkpoint": predictor_path or "none",
+        },
+        "metrics_reported": ["accuracy"],
+        "note": "F1 requires per-QA gold/pred alignment; compute if comparing to AMA-Agent F1 scores",
     }
     with open("ama_bench_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print(f"\nLeaderboard submission: ama_bench_results.jsonl")
     print(f"Summary: ama_bench_summary.json")
-    print(f"\nSimpleMem SOTA (LoCoMo F1): 43.24")
+    print(f"\nFair comparison config written to summary (see fair_comparison_config)")
 
     return summary
 

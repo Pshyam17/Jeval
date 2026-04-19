@@ -5,24 +5,36 @@ benchmarks/aggregate_ama_results.py
 Merges per-episode JSONs produced by run_ama_episode.py, computes mean ± std,
 prints a summary table, and writes the final aggregate JSON.
 
+Supports domain filtering for stratified results (SOFTWARE, Game, etc.)
+
 CLI:
-    python3.12 benchmarks/aggregate_ama_results.py \
+    python benchmarks/aggregate_ama_results.py \
       --results-dir benchmarks/results/ama_bench_episodes \
-      --out benchmarks/results/ama_bench_software_final.json
+      --out benchmarks/results/ama_bench_software_final.json \
+      --domain SOFTWARE
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
 import time
 from pathlib import Path
 from typing import Dict, List
 
 
-def _load_episodes(results_dir: Path) -> tuple[List[dict], List[dict]]:
+def _load_episodes(results_dir: Path, domain: str = None) -> tuple[List[dict], List[dict]]:
     ok, errors = [], []
     for f in sorted(results_dir.glob("episode_*.json")):
+        data = json.loads(f.read_text())
+        if "error" in data:
+            errors.append(data)
+        elif domain is not None and data.get("domain") != domain:
+            continue  # Skip episodes from other domains
+        else:
+            ok.append(data)
+    return ok, errors
         data = json.loads(f.read_text())
         if "error" in data:
             errors.append(data)
@@ -42,6 +54,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", default="benchmarks/results/ama_bench_episodes")
     parser.add_argument("--out",         default="benchmarks/results/ama_bench_software_final.json")
+    parser.add_argument("--domain",      default="SOFTWARE", help="Domain for stratified results")
+    parser.add_argument("--frozen-mode", action="store_true", default=True,
+                        help="Use frozen eval mode (no within-episode updates)")
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -50,8 +65,8 @@ def main() -> None:
     if not results_dir.exists():
         raise FileNotFoundError(f"Results directory not found: {results_dir}")
 
-    episodes, errors = _load_episodes(results_dir)
-    print(f"Loaded {len(episodes)} successful episodes, {len(errors)} errors")
+    episodes, errors = _load_episodes(results_dir, domain=args.domain if args.domain != "all" else None)
+    print(f"Loaded {len(episodes)} successful episodes ({args.domain}), {len(errors)} errors")
 
     if not episodes:
         print("No successful episodes to aggregate.")
@@ -73,14 +88,25 @@ def main() -> None:
             t = qa.get("type", "unknown")
             by_type.setdefault(t, []).append(qa["score"])
 
+    # Fair comparison reporting (architecture_v3.md §3.3)
+    answer_model = os.environ.get("JEVAL_ANSWER_MODEL", "qwen/qwen3.5-122b-a10b")
+    judge_model  = os.environ.get("JEVAL_JUDGE_MODEL", "qwen/qwen3.5-122b-a10b")
+    embedding_model = "all-mpnet-base-v2"
+    retrieval_k = 5
+
     print(f"\n{'='*60}")
-    print(f"AMA-Bench SOFTWARE — {len(episodes)} episodes")
+    print(f"AMA-Bench {args.domain} — {len(episodes)} episodes ({'frozen' if args.frozen_mode else 'adaptive'} mode)")
     print(f"{'='*60}")
     print(f"  Overall accuracy:    {mean_score:.3f} ± {std_score:.3f}")
     print(f"  Compression ratio:   {mean_cr:.3f}  (compressed/original tokens)")
     print(f"  Total orig tokens:   {sum(orig_tokens):,}")
     print(f"  Total comp tokens:   {sum(comp_tokens):,}")
     print(f"  Errors:              {len(errors)}")
+    print(f"\nFair Comparison Config (AMA-Agent parity):")
+    print(f"  Answer model:        {answer_model}")
+    print(f"  Judge model:         {judge_model}")
+    print(f"  Embedding model:     {embedding_model}")
+    print(f"  Retrieval k:         {retrieval_k}")
     print(f"\nBy QA type:")
     for qtype in sorted(by_type):
         vals = by_type[qtype]
@@ -99,6 +125,19 @@ def main() -> None:
         "by_type":                {t: {"mean": sum(v)/len(v), "std": _std(v), "n": len(v)}
                                     for t, v in by_type.items()},
         "errors":                 errors,
+        # Fair comparison checklist (architecture_v3.md §3.3)
+        "fair_comparison_config": {
+            "answer_model":         answer_model,
+            "judge_model":          judge_model,
+            "embedding_model":      embedding_model,
+            "retrieval_k":          retrieval_k,
+            "split":                "test",
+            "domain":               args.domain,
+            "frozen_mode":          args.frozen_mode,
+            "predictor_checkpoint": os.environ.get("JEVAL_PREDICTOR_CKPT", "none"),
+        },
+        "metrics_reported": ["accuracy", "compression_ratio"],
+        "note": "F1 metric requires per-QA gold/pred alignment; add if comparing to AMA-Agent F1 scores",
     }
 
     # Append timestamp suffix if output file already exists

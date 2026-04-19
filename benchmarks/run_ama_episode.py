@@ -40,10 +40,8 @@ from jeval.benchmarks.ama_bench_eval import (
 )
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_ANSWER_MODEL = os.environ.get(
-    "JEVAL_ANSWER_MODEL",
-    "qwen/qwen3.5-122b-a10b",
-)
+# Fair comparison defaults (AMA-Agent parity: Qwen3-32B backbone)
+_ANSWER_MODEL = os.environ.get("JEVAL_ANSWER_MODEL", "qwen/qwen3.5-122b-a10b")
 _JUDGE_MODEL = os.environ.get("JEVAL_JUDGE_MODEL", "qwen/qwen3.5-122b-a10b")
 
 
@@ -134,11 +132,13 @@ def run_episode(
     split: str,
     predictor_path: Optional[str],
     out_path: Path,
+    frozen_mode: bool = True,
 ) -> None:
     ep = _load_episode(dataset_name, split, episode_idx)
 
     ep_id   = ep["episode_id"]
     task    = ep.get("task", "")
+    domain  = ep.get("domain", "unknown")
     qas     = ep["qa_pairs"] if isinstance(ep["qa_pairs"], list) else json.loads(ep["qa_pairs"])
     traj    = ep["trajectory"] if isinstance(ep["trajectory"], list) else json.loads(ep["trajectory"])
 
@@ -159,15 +159,16 @@ def run_episode(
             orig_tokens += len(line.split())
     traj_text = "\n".join(traj_lines)
 
-    # Build memory — pass trained predictor if available
-    # v2.0: Uses full memory pipeline with novelty gate, fidelity gate,
-    # confidence-gated retrieval, and miss-triggered recompression
-    predictor = _load_predictor(predictor_path)
+    # Build memory — predictor is OPTIONAL (v3.0: works without)
+    # Frozen mode: no within-episode updates (fair comparison)
+    # Adaptive mode: allow graph updates, cold-hit strengthening
+    predictor = _load_predictor(predictor_path) if predictor_path else None
     mem = JevalMemory(
         predictor=predictor,
         backend=ExtractiveBackend() if predictor is None else None,
     )
     mem.memory_construction(traj_text, task=task)
+    print(f"  domain={domain}  predictor={predictor_path or 'none'}  frozen_mode={frozen_mode}")
 
     compressed_tokens = len(mem.full_memory.split())
     compression_ratio = compressed_tokens / max(orig_tokens, 1)
@@ -199,12 +200,22 @@ def run_episode(
     result = {
         "episode_idx":       episode_idx,
         "episode_id":        ep_id,
+        "domain":            ep.get("domain", "unknown"),
         "score":             float(sum(scores) / max(len(scores), 1)),
         "n_questions":       len(qas),
         "per_question":      per_question,
         "compression_ratio": compression_ratio,
         "original_tokens":   orig_tokens,
         "compressed_tokens": compressed_tokens,
+        # Fair comparison config (architecture_v3.md §3.3)
+        "fair_comparison_config": {
+            "answer_model": _ANSWER_MODEL,
+            "judge_model": _JUDGE_MODEL,
+            "embedding_model": "all-mpnet-base-v2",
+            "retrieval_k": 5,
+            "frozen_mode": frozen_mode,
+            "predictor_checkpoint": predictor_path or "none",
+        },
     }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,8 +233,10 @@ def main() -> None:
     parser.add_argument("--episode-idx", type=int,  required=True)
     parser.add_argument("--dataset",     default="AMA-bench/AMA-bench")
     parser.add_argument("--split",       default="test")
-    parser.add_argument("--predictor",   default=None)
+    parser.add_argument("--predictor",   default=None, help="Optional predictor checkpoint (v3.0: works without)")
     parser.add_argument("--out",         required=True)
+    parser.add_argument("--frozen-mode", action="store_true", default=True,
+                        help="Use frozen eval mode (no within-episode updates) for fair comparison")
     args = parser.parse_args()
 
     print(
@@ -231,6 +244,8 @@ def main() -> None:
         f"answer={_ANSWER_MODEL}  "
         f"judge={_JUDGE_MODEL}"
     )
+    print(f"predictor: {args.predictor or 'none'}")
+    print(f"eval mode: {'frozen' if args.frozen_mode else 'adaptive'}")
 
     out_path = Path(args.out)
 
@@ -241,6 +256,7 @@ def main() -> None:
             split=args.split,
             predictor_path=args.predictor,
             out_path=out_path,
+            frozen_mode=args.frozen_mode,
         )
     except Exception:
         tb = traceback.format_exc()
