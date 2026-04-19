@@ -198,10 +198,23 @@ def judge_probe(client: OpenAI, compressed_context: str, probe: Probe) -> tuple[
 
 # ── Compression helpers ───────────────────────────────────────────────────────
 
+from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
+
 def compress_with_jeval(session: Session) -> str:
-    compressor = AdaptiveCompressor(backend=LLMBackend())
-    result = compressor.compress(session)
-    return result.compressed_text
+    db_path = f".jeval/droid_memory.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    mem = JevalMemoryV2(db_path=db_path, frozen_mode=True)
+    
+    # We use LLMBackend internally but since JevalMemoryV2 uses NIM_Caller we just call ingest
+    for seg in session:
+        mem.ingest(seg.text)
+    
+    entries = mem._hot_cache.get_all_entries()
+    # Sort by seq_id to maintain timeline order
+    entries.sort(key=lambda x: x["seq_id"])
+    return "\n".join(f"[{e['seq_id']}] {e['text']}" for e in entries)
+
 
 
 def compress_with_baseline(session: Session, name: str, budget: float = 0.5) -> str:
@@ -257,10 +270,20 @@ def run_benchmark() -> None:
     }
 
     results = {name: SystemResult(name=name) for name in systems}
+    
+    out_dir = os.path.join(os.path.dirname(__file__), "../../benchmarks/results/droid_bench_episodes")
+    os.makedirs(out_dir, exist_ok=True)
 
     for sess_cfg in SESSIONS:
         session = Session(session_id=sess_cfg["id"], segments=sess_cfg["segments"])
         probes: List[Probe] = sess_cfg["probes"]
+        
+        session_log = {
+            "session_id": sess_cfg["id"],
+            "description": sess_cfg["description"],
+            "original_segments": [s.text for s in session],
+            "systems": {}
+        }
 
         print(f"\n{'='*60}")
         print(f"Session: {sess_cfg['id']} — {sess_cfg['description']}")
@@ -272,6 +295,12 @@ def run_benchmark() -> None:
             orig_words = sum(len(s.text.split()) for s in session)
             token_reduction = 1.0 - len(compressed.split()) / max(1, orig_words)
             print(f"reduction={token_reduction:.0%}")
+            
+            sys_log = {
+                "compressed_context": compressed,
+                "token_reduction": token_reduction,
+                "probes": []
+            }
 
             session_probe_scores = []
             for probe in probes:
@@ -279,10 +308,23 @@ def run_benchmark() -> None:
                 session_probe_scores.append(score)
                 results[sys_name].probe_scores.append((sess_cfg["id"], probe.probe_type, score, reasoning))
                 print(f"    [{probe.probe_type:12s}] {score}/5 — {reasoning[:80]}")
+                
+                sys_log["probes"].append({
+                    "type": probe.probe_type,
+                    "question": probe.question,
+                    "expected": probe.answer,
+                    "score": score,
+                    "reasoning": reasoning
+                })
 
             session_mean = statistics.mean(session_probe_scores)
             results[sys_name].session_scores.append(session_mean)
+            sys_log["session_mean"] = session_mean
+            session_log["systems"][sys_name] = sys_log
             print(f"  [{sys_name}] session mean: {session_mean:.2f}/5")
+            
+        with open(os.path.join(out_dir, f"episode_{sess_cfg['id']}.json"), "w") as f:
+            json.dump(session_log, f, indent=2)
 
     # ── Results table ──────────────────────────────────────────────────────────
     print(f"\n\n{'='*60}")
