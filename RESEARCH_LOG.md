@@ -426,3 +426,17 @@ Also added `slurm/droid_bench.sh` — was missing from the original pipeline, ru
 
 **Paper note:** Domain-stratified results are a stronger contribution than a uniform aggregate improvement — they precisely identify where causal-detail preservation matters and where it doesn't.
 
+---
+
+## [2026-04-19] v3.0 Architecture Math Validation & Implementation Checklist
+
+**Task:** Audit v3.0 architecture for paper defensibility and compile an exhaustive implementation checklist.
+
+**What happened:** A complete mathematical audit of the v3.0 formulas (query/answer confidence, cosine/predictor EPE, schema gap, context reuse, cold feedback) was conducted. All equations were found to be deployable (no ground-truth/oracle leakage) and mathematically sound. Threshold rationales and ablation parameters were formally defined.
+
+**Fix:** Appended "Appendix C: Implementation Status Tracker" to `docs/architecture_v3.md`. The comprehensive checklist spans 9 areas: core math, architecture fixes, SLURM/fair comparison setup, model changes, HPC testing, logging, analysis plan, paper readiness, and technical debt.
+
+**Result:** Architecture document is now fully up-to-date and serves as a defensible foundation for the paper submission. The tracker clearly separates what is implemented (Combined EPE, Novelty Gate, Schema Gap) from what is pending (`session_aware.py` components).
+
+**Paper note:** The strict separation of construction fidelity (pre-hoc gate) and retrieval sufficiency (deployable confidence) guarantees that no oracle information leaks into the evaluation, making the system defensible against AMA-Bench.
+
