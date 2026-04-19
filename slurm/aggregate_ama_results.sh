@@ -22,8 +22,13 @@ module load miniconda3/24.11.1
 
 export PYTHONPATH="$WORKDIR:$PYTHONPATH"
 
+# Optional: specify domain for stratified results (default: SOFTWARE)
+DOMAIN="${JEVAL_AMA_DOMAIN:-SOFTWARE}"
+OUT_BASE="benchmarks/results/ama_bench_${DOMAIN,,}_final.json"
+
 python benchmarks/aggregate_ama_results.py \
     --results-dir benchmarks/results/ama_bench_episodes \
-    --out         benchmarks/results/ama_bench_software_final.json
+    --out         "$OUT_BASE" \
+    --domain      "$DOMAIN"
 
 echo "=== aggregate complete: $(date) ==="

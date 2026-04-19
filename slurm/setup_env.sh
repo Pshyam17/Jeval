@@ -1,4 +1,11 @@
 #!/bin/bash
+# SLURM script for setting up jeval environment on cluster nodes.
+# Also works as a reference for manual setup (see comments below).
+#
+# Usage:
+#   sbatch slurm/setup_env.sh    # Run as SLURM job
+#   source slurm/setup_env.sh    # Source for manual setup (skip SBATCH lines)
+#
 #SBATCH --job-name=jeval-setup
 #SBATCH --account=cs6140.202630
 #SBATCH --partition=short
@@ -14,7 +21,7 @@ set -e
 echo "=== jeval env setup ==="
 echo "Node: $SLURMD_NODENAME  Start: $(date)"
 
-WORKDIR="$HOME/jeval/Jeval-1"
+WORKDIR="${JEVAL_WORKDIR:-$HOME/jeval/Jeval-1}"
 mkdir -p "$WORKDIR/logs" "$WORKDIR/checkpoints" \
          "$WORKDIR/benchmarks/results/ama_bench_episodes" \
          "$WORKDIR/train/data"
@@ -48,4 +55,18 @@ EOF
 
 pip install --quiet -e "$WORKDIR"
 
+# Set fair comparison environment defaults
+# These can be overridden in your shell profile or job scripts
+cat <<'ENVEOF'
+
+=== Fair Comparison Defaults (add to your shell profile) ===
+export JEVAL_ANSWER_MODEL="qwen/qwen3.5-122b-a10b"
+export JEVAL_JUDGE_MODEL="qwen/qwen3.5-122b-a10b"
+export JEVAL_AMA_DOMAIN="SOFTWARE"
+export JEVAL_WORKDIR="$HOME/jeval/Jeval-1"
+# Add your NVIDIA API key:
+# export NVIDIA_API_KEY="nvapi-..."
+ENVEOF
+
+echo ""
 echo "=== setup complete: $(date) ==="

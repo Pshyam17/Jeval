@@ -42,13 +42,21 @@ if [ -z "${NVIDIA_API_KEY:-}" ]; then
     echo "ERROR: NVIDIA_API_KEY not set" >&2; exit 1
 fi
 
+# Optional predictor: use if available, otherwise run without (v3.0 default)
+PREDICTOR_ARG=""
+if [ -f "checkpoints/predictor_v2_best.pt" ]; then
+    PREDICTOR_ARG="--predictor checkpoints/predictor_v2_best.pt"
+fi
+
 echo "=== episode $IDX  node=$SLURMD_NODENAME  start=$(date) ==="
+echo "Models: answer=\$JEVAL_ANSWER_MODEL  judge=\$JEVAL_JUDGE_MODEL"
+echo "Predictor: \${PREDICTOR_ARG:-none}"
 
 python benchmarks/run_ama_episode.py \
     --episode-idx "$IDX" \
     --dataset     AMA-bench/AMA-bench \
     --split       test \
-    --predictor   checkpoints/predictor_v2_best.pt \
-    --out         "$OUT"
+    --out         "$OUT" \
+    ${PREDICTOR_ARG:+$PREDICTOR_ARG}
 
 echo "=== episode $IDX done: $(date) ==="
