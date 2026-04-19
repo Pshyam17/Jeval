@@ -75,6 +75,12 @@ def _complete(client: OpenAI, prompt: str, max_tokens: int = 512, model: str = "
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 def _answer(client: OpenAI, mem: JevalMemory, question: str, task: str) -> str:
+    """Generate answer using v3.0 confidence-based retry escalation."""
+    # Use answer_with_retry if available (v3.0 session-aware memory)
+    if hasattr(mem, 'answer_with_retry'):
+        answer, _ = mem.answer_with_retry(client, question, task)
+        return answer
+    # Fallback to simple retrieval
     context = mem.memory_retrieve(question, top_k=5)
     if not context:
         context = mem.full_memory[:3000]
@@ -166,6 +172,7 @@ def run_episode(
     mem = JevalMemory(
         predictor=predictor,
         backend=ExtractiveBackend() if predictor is None else None,
+        frozen_mode=frozen_mode,
     )
     mem.memory_construction(traj_text, task=task)
     print(f"  domain={domain}  predictor={predictor_path or 'none'}  frozen_mode={frozen_mode}")

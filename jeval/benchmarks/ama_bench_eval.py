@@ -40,6 +40,12 @@ from jeval.encoders.predictor_head import PreLNTransformerPredictor
 from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.ingest.base import Segment, Session
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
+from jeval.memory.session_aware import (
+    ContextReuseCache,
+    StaticRetrievalPolicy,
+    ConfidenceRetryEscalation,
+    compute_answer_confidence,
+)
 
 # Fair comparison defaults (AMA-Agent parity: Qwen3-32B backbone)
 # Override via environment: export JEVAL_ANSWER_MODEL=qwen/qwen3.5-122b-a10b
@@ -118,32 +124,32 @@ def trajectory_to_session(episode: Dict[str, Any]) -> Session:
 
 class JevalMemory:
     """
-    Implements AMA-Bench two-stage memory interface using jeval v2.0 architecture.
+    Implements AMA-Bench two-stage memory interface using jeval v3.0 architecture.
 
     Stage 1 — memory_construction:
-        Ingests trajectory segments through the full v2.0 pipeline:
+        Ingests trajectory segments through the full v3.0 pipeline:
         - Cold storage (unconditional SQLite + FTS5 archive)
         - Novelty gate (cosine EPE threshold)
         - Entity extraction + fact indexing
         - Content classification (FACTUAL/CAUSAL/ENTITY/etc.)
         - Anchor extraction (Tier 1/Tier 2)
-        - Fidelity gate with Combined EPE (cosine + schema gap)
-        - Hot cache (bounded compressed store)
+        - Fidelity gate with Combined EPE (cosine + schema gap + R_build)
+        - Hot cache (bounded compressed store with R_build metadata)
         - Async contradiction detection + miss-triggered recompression
 
     Stage 2 — memory_retrieve:
-        Query-conditioned retrieval with confidence gate routing:
-        - Query classification (context/precision/entity/ambiguous)
-        - Confidence gate determines: hot_cache vs enriched vs cold_storage
-        - BM25 lexical search + semantic retrieval
-        - Co-retrieval graph for segment associations
-        - Fallback to cold storage with FTS5
+        v3.0 session-aware retrieval with:
+        - ContextReuseCache: Reuse context for similar questions (§1.7)
+        - StaticRetrievalPolicy: Typed k and routing per QA type (§1.8)
+        - ConfidenceRetryEscalation: Budget-aware retry with escalation (§1.9)
+        - Query confidence C_q: Entity overlap for routing (§1.3)
+        - Answer confidence C_a: Evidence support + coverage + hot trust (§1.4)
 
-    Key v2.0 improvements over v1:
-        - Pre-hoc fidelity gating (measure before commit)
-        - Schema gap adds 117% signal over cosine EPE alone
-        - Miss-triggered recompression self-heals high-miss entries
-        - Multi-factor eviction (miss counter weighted highest)
+    Key v3.0 improvements over v2.0:
+        - Context reuse cache: 20-40% hit rate, reduces latency
+        - Static retrieval policy: Typed k and routing (no oracle dependency)
+        - Confidence-based retry: Escalates from hot → enriched → cold
+        - Pre-hoc fidelity gating: R_build ≤ 0.35 prevents lossy compression
     """
 
     def __init__(
@@ -155,18 +161,46 @@ class JevalMemory:
         fidelity_threshold: float = 0.25,
         alpha: float = 0.5,
         beta: float = 1.0,
+        frozen_mode: bool = True,
     ):
         self.encoder = encoder or FrozenEncoder()
         self.predictor = predictor
+        self._frozen_mode = frozen_mode
 
-        # Always use v2.0 full memory pipeline
+        # Create compressor for v2.0 memory (uses Qwen model, not expired mistral)
+        api_key = os.environ.get("NVIDIA_API_KEY", "")
+        if api_key:
+            try:
+                from openai import OpenAI
+                nim_client = OpenAI(
+                    api_key=api_key,
+                    base_url=os.environ.get("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+                )
+                model = os.environ.get("JEVAL_NIM_MODEL", "qwen/qwen3.5-122b-a10b")
+                compressor = LLMBackend(base_url=None, model=model, api_key=api_key)
+            except Exception:
+                compressor = ExtractiveBackend()
+        else:
+            compressor = ExtractiveBackend()
+
+        # Always use v2.0 full memory pipeline (v3.0 builds on top)
+        # frozen_mode disables within-episode updates for fair benchmarking (§1.12)
         self._v2_memory = JevalMemoryV2(
             db_path=db_path,
             fidelity_threshold=fidelity_threshold,
             alpha=alpha,
             beta=beta,
             encoder=self.encoder,
+            compressor=compressor,
+            frozen_mode=frozen_mode,
         )
+
+        # v3.0 session-aware components
+        # In frozen mode: context cache still works (pure caching, no learning)
+        self._context_cache = ContextReuseCache(self.encoder, threshold=0.85, max_cache_size=100)
+        self._retrieval_policy = StaticRetrievalPolicy()
+        self._retry_logic = ConfidenceRetryEscalation(max_attempts=3, confidence_threshold=0.70)
+        self._compressor = compressor  # For v1 fallback path
 
     def memory_construction(self, traj_text: str, task: str = "") -> "JevalMemory":
         """Build compressed memory from raw trajectory text."""
@@ -219,13 +253,50 @@ class JevalMemory:
 
         return self
 
-    def memory_retrieve(self, question: str, top_k: int = 5) -> str:
-        """Retrieve top-K relevant segments for a question."""
-        if self._v2_memory is not None:
-            # v2.0 path: use confidence-gated retrieval
-            return self._v2_memory.retrieve(question, k=top_k)
+    def memory_retrieve(self, question: str, top_k: int = 5, qa_type: Optional[str] = None) -> str:
+        """
+        Retrieve top-K relevant segments for a question using v3.0 session-aware components.
 
-        # v1 fallback path for compatibility
+        v3.0 improvements:
+        - ContextReuseCache: Reuse context for similar questions (θ_reuse = 0.85)
+        - StaticRetrievalPolicy: Typed k and routing per QA type
+        - ConfidenceRetryEscalation: Retry with escalation if confidence < 0.70
+
+        Args:
+            question: The query question
+            top_k: Default retrieval depth (overridden by policy if qa_type provided)
+            qa_type: Optional QA type for policy-based retrieval
+
+        Returns:
+            Retrieved context string
+        """
+        if self._v2_memory is None:
+            # Fallback to v1 path
+            return self._retrieve_v1(question, top_k)
+
+        # Classify question if type not provided
+        if qa_type is None:
+            qa_type = self._retrieval_policy.get_qa_type(question)
+
+        # Get policy-based k and routing
+        policy_k = self._retrieval_policy.get_k(qa_type)
+        policy_routing = self._retrieval_policy.get_routing(qa_type)
+
+        # v3.0: Context reuse cache
+        def retrieve_fn(q: str) -> str:
+            """Retrieve function for cache miss."""
+            return self._v2_memory.retrieve_with_routing(q, k=policy_k, routing_preference=policy_routing)
+
+        context, was_cached = self._context_cache.get_or_retrieve(
+            q_uuid=f"q_{hash(question)}",  # Simple UUID from hash
+            question=question,
+            retrieve_fn=retrieve_fn,
+        )
+
+        return context
+
+    def _retrieve_v1(self, question: str, top_k: int) -> str:
+        """Fallback v1 retrieval for compatibility."""
         if not self._compressed:
             return ""
 
@@ -263,6 +334,108 @@ class JevalMemory:
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [line for _, line in scored[:top_k]]
         return "\n".join(top)
+
+    def answer_with_retry(
+        self,
+        client: OpenAI,
+        question: str,
+        task: str,
+        qa_type: Optional[str] = None,
+    ) -> tuple[str, int]:
+        """
+        Generate answer with v3.0 confidence-based retry escalation.
+
+        v3.0 flow (§1.9):
+        Attempt 1: policy k + routing → generate → compute C_a
+        Attempt 2: escalate route, increase k → generate → compute C_a
+        Attempt 3: cold storage, max k → generate → return best effort
+
+        Args:
+            client: OpenAI client for LLM calls
+            question: The query question
+            task: Task description
+            qa_type: Optional QA type for policy
+
+        Returns:
+            (answer, attempts_made)
+        """
+        if self._v2_memory is None:
+            # Fallback without retry
+            return self._answer_v1(client, question, task), 1
+
+        def retrieve_fn(q: str) -> str:
+            return self.memory_retrieve(q, qa_type=qa_type)
+
+        def llm_fn(q: str, ctx: str) -> str:
+            prompt = ANSWER_PROMPT.format(context=ctx, task=task[:300], question=q)
+            return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
+
+        def confidence_fn(q: str, ctx: str, ans: str) -> object:
+            from jeval.memory.session_aware import ConfidenceResult
+            # Compute hot_trust from R_build metadata in retrieved hot entries
+            hot_trust = self._compute_hot_trust(ctx)
+            result = compute_answer_confidence(q, ctx, ans, hot_trust=hot_trust)
+            return result
+
+        # v3.0: Confidence-based retry with escalation
+        answer, attempts = self._retry_logic.execute(
+            question=question,
+            mem=self._v2_memory,
+            qa_type=qa_type or self._retrieval_policy.get_qa_type(question),
+            policy=self._retrieval_policy,
+            llm_fn=llm_fn,
+            confidence_fn=confidence_fn,
+        )
+
+        return answer, attempts
+
+    def _compute_hot_trust(self, context: str) -> float:
+        """
+        Compute hot_trust = 1 - mean(R_build) for hot entries used in context (§1.4).
+
+        R_build metadata is stored in hot cache entries during ingest.
+        Returns 1.0 (full trust) if no R_build metadata found.
+        """
+        if self._v2_memory is None:
+            return 1.0
+
+        # Extract seq_ids from context (format: "[seq_id] text")
+        import re
+        seq_ids = re.findall(r'\[(\d+)\]', context)
+
+        if not seq_ids:
+            return 1.0
+
+        r_build_scores = []
+        hot_entries = self._v2_memory._hot_cache.get_all_entries()
+
+        # Build map of seq_id -> R_build score
+        r_build_map = {}
+        for entry in hot_entries:
+            metadata = entry.get("metadata", {})
+            r_build = metadata.get("r_build")
+            if r_build is not None:
+                r_build_map[str(entry["seq_id"])] = float(r_build)
+
+        # Collect R_build scores for entries in context
+        for seq_id in seq_ids:
+            if seq_id in r_build_map:
+                r_build_scores.append(r_build_map[seq_id])
+
+        if not r_build_scores:
+            return 1.0
+
+        # C_trust = 1 - mean(R_build)
+        mean_r_build = sum(r_build_scores) / len(r_build_scores)
+        return 1.0 - mean_r_build
+
+    def _answer_v1(self, client: OpenAI, question: str, task: str) -> str:
+        """Fallback v1 answer generation."""
+        context = self.memory_retrieve(question, top_k=5)
+        if not context:
+            context = self.full_memory[:3000]
+        prompt = ANSWER_PROMPT.format(context=context, task=task[:300], question=question)
+        return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
 
     @property
     def token_reduction(self) -> float:
@@ -336,13 +509,37 @@ Minor details can be omitted if the core answer is correct.
 Respond with JSON only: {{"correct": true/false, "reasoning": "<one sentence>"}}"""
 
 
-def generate_answer(client: OpenAI, memory: JevalMemory, question: str, task: str) -> str:
-    # Keep retrieval K aligned with AMA-Agent parity setting.
-    context = memory.memory_retrieve(question, top_k=5)
-    if not context:
-        context = memory.full_memory[:3000]
-    prompt = ANSWER_PROMPT.format(context=context, task=task[:300], question=question)
-    return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
+def generate_answer(
+    client: OpenAI,
+    memory: JevalMemory,
+    question: str,
+    task: str,
+    qa_type: Optional[str] = None,
+    use_retry: bool = True,
+) -> tuple[str, int]:
+    """
+    Generate answer using v3.0 session-aware components.
+
+    Args:
+        client: OpenAI client for LLM calls
+        memory: JevalMemory instance
+        question: The query question
+        task: Task description
+        qa_type: Optional QA type for policy-based retrieval
+        use_retry: Whether to use confidence-based retry (default True)
+
+    Returns:
+        (answer, attempts_made)
+    """
+    if use_retry and hasattr(memory, 'answer_with_retry'):
+        return memory.answer_with_retry(client, question, task, qa_type)
+    else:
+        # Simple path without retry
+        context = memory.memory_retrieve(question, top_k=5, qa_type=qa_type)
+        if not context:
+            context = memory.full_memory[:3000]
+        prompt = ANSWER_PROMPT.format(context=context, task=task[:300], question=question)
+        return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL), 1
 
 
 def judge_answer(client: OpenAI, question: str, reference: str, predicted: str) -> tuple[bool, str]:

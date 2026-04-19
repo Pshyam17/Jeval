@@ -7,7 +7,7 @@ _api_key = os.environ.get("NVIDIA_API_KEY", "")
 _has_key = bool(_api_key)
 
 NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NIM_MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
+NIM_MODEL = "qwen/qwen3.5-122b-a10b"
 
 
 @pytest.mark.skipif(not _has_key, reason="NVIDIA_API_KEY not set")

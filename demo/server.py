@@ -183,7 +183,7 @@ async def startup():
     _compressor = StreamingCompressor(
         api_key=api_key,
         base_url="https://integrate.api.nvidia.com/v1",
-        model="mistralai/mistral-small-3.1-24b-instruct-2503",
+        model="qwen/qwen3.5-122b-a10b",
     )
 
     # warm up NIM — first call after inactivity triggers model loading

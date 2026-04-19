@@ -36,7 +36,7 @@ from jeval.ingest.base import Segment, Session
 
 # ── NIM client ────────────────────────────────────────────────────────────────
 
-_MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
+_MODEL = "qwen/qwen3.5-122b-a10b"
 
 
 def _nim_client() -> OpenAI:

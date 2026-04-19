@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 # NVIDIA NIM endpoint — swap base_url to use OpenAI or any OAI-compatible provider
 _NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-_NIM_MODEL    = "mistralai/mistral-small-3.1-24b-instruct-2503"
+_NIM_MODEL    = "qwen/qwen3.5-122b-a10b"
 
 
 class LLMBackend(CompressorBackend):
@@ -55,7 +55,8 @@ class LLMBackend(CompressorBackend):
             self._client = OpenAI(**kwargs)
         return self._client
 
-    def compress(self, text: str, budget: float) -> str:
+    def compress(self, text: str, budget: float, anchors: list[str] = None) -> str:
+        """Compress text with optional anchors to preserve verbatim."""
         if not text:
             return ""
         if budget >= 1.0:
@@ -66,7 +67,7 @@ class LLMBackend(CompressorBackend):
             return self._fallback.compress(text, budget)
 
         target_words = max(8, int(len(text.split()) * budget))
-        prompt = self._compose_prompt(text, budget, target_words)
+        prompt = self._compose_prompt(text, budget, target_words, anchors or [])
 
         try:
             response = client.chat.completions.create(
@@ -87,17 +88,20 @@ class LLMBackend(CompressorBackend):
                 pass
             return self._fallback.compress(text, budget)
 
-    def _compose_prompt(self, text: str, budget: float, target_words: int) -> str:
+    def _compose_prompt(self, text: str, budget: float, target_words: int, anchors: list[str] = None) -> str:
         aggressiveness = "aggressively" if budget < 0.4 else "lightly"
-        return (
+        prompt = (
             f"Compress the following text {aggressiveness}. "
             f"Target: ~{target_words} words (ratio {budget:.0%}). "
             "Preserve all file paths, variable names, error codes, API endpoints, "
             "decisions, and causal reasoning exactly. "
             "Drop filler, pleasantries, and redundant phrasing. "
-            "Return only the compressed text, no preamble.\n\n"
-            f"Text:\n{text}"
+            "Return only the compressed text, no preamble."
         )
+        if anchors:
+            prompt += f"\n\nPreserve these key terms verbatim: {', '.join(anchors)}"
+        prompt += f"\n\nText:\n{text}"
+        return prompt
 
     def name(self) -> str:
         return f"llm-{self.model.split('/')[-1]}"

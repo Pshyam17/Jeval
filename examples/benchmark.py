@@ -40,7 +40,7 @@ _NIM_CLIENT = OpenAI(
     api_key=os.environ["NVIDIA_API_KEY"],
     base_url="https://integrate.api.nvidia.com/v1",
 )
-_MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
+_MODEL = "qwen/qwen3.5-122b-a10b"
 
 
 def nim_complete(prompt: str, max_tokens: int = 512) -> str:
