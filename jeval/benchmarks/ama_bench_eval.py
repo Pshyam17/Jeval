@@ -5,8 +5,9 @@ jeval/benchmarks/ama_bench_eval.py
 Runs jeval against AMA-Bench (SOFTWARE domain by default) using their
 two-stage memory interface: memory_construction → memory_retrieve → answer.
 
-Scoring uses Mistral via NVIDIA NIM as judge, matching AMA-Bench methodology.
-Their paper validates this judge at 92.67% accuracy vs human annotations.
+Defaults are configured for fairer AMA-Bench comparison:
+- answer model: JEVAL_ANSWER_MODEL (default qwen/qwen3.5-122b-a10b)
+- judge model:  JEVAL_JUDGE_MODEL (default qwen/qwen3.5-122b-a10b)
 
 Usage:
     export NVIDIA_API_KEY=nvapi-...
@@ -40,7 +41,11 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.ingest.base import Segment, Session
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_MODEL   = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
+_ANSWER_MODEL = os.environ.get(
+    "JEVAL_ANSWER_MODEL",
+    "qwen/qwen3.5-122b-a10b",
+)
+_JUDGE_MODEL = os.environ.get("JEVAL_JUDGE_MODEL", "qwen/qwen3.5-122b-a10b")
 _DOMAINS = ["Game", "EMBODIED_AI", "OPENWORLD_QA", "TEXT2SQL", "SOFTWARE", "WEB"]
 
 
@@ -53,11 +58,12 @@ def _client() -> OpenAI:
     )
 
 
-def _complete(client: OpenAI, prompt: str, max_tokens: int = 512) -> str:
+def _complete(client: OpenAI, prompt: str, max_tokens: int = 512, model: str = "") -> str:
+    selected_model = model or _ANSWER_MODEL
     for attempt in range(3):
         try:
             resp = client.chat.completions.create(
-                model=_MODEL,
+                model=selected_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=0.1,
@@ -212,7 +218,7 @@ class JevalMemory:
 
         return self
 
-    def memory_retrieve(self, question: str, top_k: int = 8) -> str:
+    def memory_retrieve(self, question: str, top_k: int = 5) -> str:
         """Retrieve top-K relevant segments for a question."""
         if self._v2_memory is not None:
             # v2.0 path: use confidence-gated retrieval
@@ -330,11 +336,12 @@ Respond with JSON only: {{"correct": true/false, "reasoning": "<one sentence>"}}
 
 
 def generate_answer(client: OpenAI, memory: JevalMemory, question: str, task: str) -> str:
-    context = memory.memory_retrieve(question, top_k=10)
+    # Keep retrieval K aligned with AMA-Agent parity setting.
+    context = memory.memory_retrieve(question, top_k=5)
     if not context:
         context = memory.full_memory[:3000]
     prompt = ANSWER_PROMPT.format(context=context, task=task[:300], question=question)
-    return _complete(client, prompt, max_tokens=300)
+    return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
 
 
 def judge_answer(client: OpenAI, question: str, reference: str, predicted: str) -> tuple[bool, str]:
@@ -343,7 +350,7 @@ def judge_answer(client: OpenAI, question: str, reference: str, predicted: str) 
         reference=reference,
         predicted=predicted,
     )
-    raw = _complete(client, prompt, max_tokens=150)
+    raw = _complete(client, prompt, max_tokens=150, model=_JUDGE_MODEL)
     try:
         clean = raw.strip().strip("```json").strip("```").strip()
         result = json.loads(clean)
@@ -359,7 +366,7 @@ def longcontext_answer(client: OpenAI, traj_text: str, question: str, task: str)
     # Truncate to ~3000 tokens to fit in context
     truncated = traj_text[:12000]
     prompt = ANSWER_PROMPT.format(context=truncated, task=task[:300], question=question)
-    return _complete(client, prompt, max_tokens=300)
+    return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
 
 
 # ── Main eval loop ────────────────────────────────────────────────────────────
@@ -399,6 +406,7 @@ def run_eval(
 
     episodes = episodes[:max_episodes]
     print(f"\nAMA-Bench eval — domain={domain}, episodes={len(episodes)}")
+    print(f"Models: answer={_ANSWER_MODEL}  judge={_JUDGE_MODEL}")
     print(f"Systems: jeval" + (" + longcontext baseline" if run_baseline else ""))
     print("=" * 60)
 

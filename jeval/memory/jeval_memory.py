@@ -323,10 +323,13 @@ class JevalMemory:
             except (TimeoutError, RuntimeError):
                 return self._extractive_fallback(text, budget), "extractive_fallback"
 
-            cand_emb = self._encoder.encode([candidate])[0]
-            fidelity_epe = float(1.0 - np.dot(orig_emb, cand_emb))
+            # Fidelity gate must reflect fact loss, not just embedding drift.
+            # Gate on CombinedEPE (cosine EPE + schema gap between original and candidate).
+            cosine_epe, schema_gap, epe_final = self._combined_epe.compute(
+                text, candidate, content_type
+            )
 
-            if fidelity_epe <= self._fidelity_threshold:
+            if epe_final <= self._fidelity_threshold:
                 return candidate, "cached"
 
         return self._extractive_fallback(text, budget), "extractive_fallback"

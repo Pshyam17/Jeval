@@ -40,7 +40,11 @@ from jeval.benchmarks.ama_bench_eval import (
 )
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_MODEL = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
+_ANSWER_MODEL = os.environ.get(
+    "JEVAL_ANSWER_MODEL",
+    "qwen/qwen3.5-122b-a10b",
+)
+_JUDGE_MODEL = os.environ.get("JEVAL_JUDGE_MODEL", "qwen/qwen3.5-122b-a10b")
 
 
 # ── NIM client with retry ─────────────────────────────────────────────────────
@@ -52,11 +56,12 @@ def _client() -> OpenAI:
     )
 
 
-def _complete(client: OpenAI, prompt: str, max_tokens: int = 512) -> str:
+def _complete(client: OpenAI, prompt: str, max_tokens: int = 512, model: str = "") -> str:
+    selected_model = model or _ANSWER_MODEL
     for attempt in range(3):
         try:
             resp = client.chat.completions.create(
-                model=_MODEL,
+                model=selected_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=0.1,
@@ -76,14 +81,14 @@ def _answer(client: OpenAI, mem: JevalMemory, question: str, task: str) -> str:
     if not context:
         context = mem.full_memory[:3000]
     prompt = ANSWER_PROMPT.format(context=context, task=task[:300], question=question)
-    return _complete(client, prompt, max_tokens=300)
+    return _complete(client, prompt, max_tokens=300, model=_ANSWER_MODEL)
 
 
 def _judge(client: OpenAI, question: str, reference: str, predicted: str) -> tuple[bool, str]:
     prompt = JUDGE_PROMPT.format(
         question=question, reference=reference, predicted=predicted
     )
-    raw = _complete(client, prompt, max_tokens=150)
+    raw = _complete(client, prompt, max_tokens=150, model=_JUDGE_MODEL)
     try:
         clean = raw.strip().strip("```json").strip("```").strip()
         result = json.loads(clean)
@@ -220,6 +225,12 @@ def main() -> None:
     parser.add_argument("--predictor",   default=None)
     parser.add_argument("--out",         required=True)
     args = parser.parse_args()
+
+    print(
+        "models: "
+        f"answer={_ANSWER_MODEL}  "
+        f"judge={_JUDGE_MODEL}"
+    )
 
     out_path = Path(args.out)
 
