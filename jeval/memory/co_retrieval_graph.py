@@ -9,6 +9,7 @@ SMOOTHING = 2.0
 _DECAY_FACTOR = 0.95
 _DECAY_INTERVAL = 50   # calls between automatic decay runs
 _MIN_WEIGHT = 0.05     # edges below this are pruned on decay
+_COLD_HIT_INCREMENT = 3  # Cold hits get 3x increment for stronger edges (§1.12)
 
 
 class CoRetrievalGraph:
@@ -18,13 +19,20 @@ class CoRetrievalGraph:
     Every time a retrieval returns a result set, edges between all pairs of
     returned segments are incremented.  Weights are normalised to (0, 1) via
     a smoothed count formula and decay over time so stale associations fade.
+
+    v3.0: Supports frozen_mode to disable updates for fair benchmarking (§1.12).
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        frozen_mode: bool = False,
+    ) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._call_count = 0
+        self._frozen_mode = frozen_mode
         self._conn = self._connect()
         self._init_schema()
 
@@ -64,8 +72,33 @@ class CoRetrievalGraph:
     # Public API
     # ------------------------------------------------------------------
 
-    def record_retrieval(self, seg_ids: list[str]) -> None:
-        """Increment edge counts for every pair in *seg_ids*."""
+    def record_retrieval(
+        self,
+        seg_ids: list[str],
+        was_cold_hit: bool = False,
+    ) -> None:
+        """
+        Increment edge counts for every pair in *seg_ids*.
+
+        If was_cold_hit=True, strengthen edges more (η_hit = 0.15 vs base = 0.05).
+
+        Cold Storage Feedback Loop (§1.12):
+        On cold_storage hit for query Q returning segment s:
+        1. Graph Edge Strengthening:
+           For each hot entry h that was also retrieved (co-retrieval):
+             w(h, s) ← w(h, s) + η_hit
+           where η_hit = 0.15
+
+        2. Promotion Tracking:
+           Track cold_hit_count[s] += 1
+           If cold_hit_count[s] ≥ 3 AND s was accessed in last 50 turns:
+             # Candidate for hot promotion
+             enqueue s for recompression and hot-cache insertion
+
+        v3.0: In frozen_mode, skip all updates for fair benchmarking.
+        """
+        if self._frozen_mode:
+            return  # No updates in frozen mode
         if len(seg_ids) < 2:
             return
 
@@ -78,17 +111,21 @@ class CoRetrievalGraph:
                     a, b = b, a
                 pairs.append((a, b))
 
+        # Cold hits get stronger edge weights (η_hit = 0.15 vs base increment)
+        # Base increment is ~0.05 (1/(1+SMOOTHING)), cold hits get ~0.15
+        increment = 3 if was_cold_hit else 1
+
         with self._lock:
             for a, b in pairs:
                 self._conn.execute(
                     """
                     INSERT INTO co_retrieval_edges (seg_id_a, seg_id_b, weight, count, last_updated)
-                    VALUES (?, ?, 0.0, 1, ?)
+                    VALUES (?, ?, 0.0, ?, ?)
                     ON CONFLICT(seg_id_a, seg_id_b) DO UPDATE SET
-                        count        = count + 1,
+                        count        = count + ?,
                         last_updated = excluded.last_updated
                     """,
-                    (a, b, now),
+                    (a, b, increment, now, increment),
                 )
             # Recompute weight from count for every updated pair
             for a, b in pairs:

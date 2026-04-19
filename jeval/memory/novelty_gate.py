@@ -6,6 +6,7 @@ from typing import Optional
 import numpy as np
 
 from jeval.encoders.sentence_encoder import FrozenEncoder
+from jeval.memory.schema_gap import SchemaGapVerifier
 
 
 class NoveltyGate:
@@ -14,6 +15,8 @@ class NoveltyGate:
     Cosine distance alone fails for structurally similar but semantically
     distinct segments (e.g. consecutive agent steps with different actions).
     Entity diversity catches these by checking for new named entities/numbers.
+
+    v3.0: Also integrates schema novelty detection (§1.10) for artifact types.
     """
 
     def __init__(
@@ -21,11 +24,15 @@ class NoveltyGate:
         encoder: FrozenEncoder,
         threshold: float = 0.05,
         working_set_size: int = 50,
+        schema_novelty_threshold: float = 0.50,  # τ_novel
     ):
         self._encoder = encoder
         self._threshold = threshold
         self._working_set: deque[np.ndarray] = deque(maxlen=working_set_size)
         self._seen_entities: set[str] = set()
+        self._schema_verifier = SchemaGapVerifier()
+        self._schema_novelty_threshold = schema_novelty_threshold
+        self._unknown_artifacts: list[str] = []  # Queue for offline schema induction
 
     def _extract_key_tokens(self, text: str) -> set[str]:
         """Extract numbers, capitalized words, and short tokens as key entities."""
@@ -47,6 +54,42 @@ class NoveltyGate:
         sims = np.array([float(np.dot(emb, w)) for w in self._working_set])
         epe = float(1.0 - sims.max())
         return epe > self._threshold, epe
+
+    def is_schema_novel(self, text: str) -> tuple[bool, float]:
+        """
+        Check if text is novel according to schema novelty detection (§1.10).
+
+        Novelty(x | S) = 1 − max_{s ∈ S} Fit(x, s)
+
+        Returns:
+            (is_novel, novelty_score):
+            - is_novel=True if novelty_score > τ_novel (0.50)
+            - novelty_score=1.0 means fully novel (no schema matches)
+            - novelty_score=0.0 means perfect schema match
+        """
+        novelty_score = self._schema_verifier.compute_novelty(text)
+        is_novel = novelty_score > self._schema_novelty_threshold
+        return is_novel, novelty_score
+
+    def enqueue_for_induction(self, artifact: str) -> None:
+        """
+        Enqueue unknown artifact for offline schema induction (§1.11).
+
+        Called when Novelty(x | S) > τ_novel - artifact doesn't match
+        any known schema and should be considered for new schema discovery.
+        """
+        self._unknown_artifacts.append(artifact)
+
+    def get_unknown_artifacts(self) -> list[str]:
+        """
+        Get queue of unknown artifacts for offline schema induction.
+
+        Returns list of artifacts that didn't match any known schema.
+        These can be passed to SchemaInduction for batch processing.
+        """
+        artifacts = self._unknown_artifacts.copy()
+        self._unknown_artifacts.clear()
+        return artifacts
 
     def update_working_set(
         self,

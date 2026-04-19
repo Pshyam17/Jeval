@@ -60,7 +60,7 @@ class _NIMCaller:
                 api_key=api_key,
                 base_url=os.environ.get("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
             )
-            self._model = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
+            self._model = os.environ.get("JEVAL_NIM_MODEL", "qwen/qwen3.5-122b-a10b")
             self._available = bool(api_key)
         except ImportError:
             self._client = None
@@ -109,6 +109,7 @@ class JevalMemory:
         eviction_weights: tuple = (0.3, 0.4, 0.2, 0.1),
         session_id: Optional[str] = None,
         encoder_model: str = "all-mpnet-base-v2",
+        frozen_mode: bool = False,  # v3.0: disable within-episode updates
         _caller=None,
         encoder=None,
         compressor=None,
@@ -131,6 +132,7 @@ class JevalMemory:
         _jeval_dir.mkdir(parents=True, exist_ok=True)
         self._query_log_path = _jeval_dir / "query_log.jsonl"
 
+        self._frozen_mode = frozen_mode  # v3.0: disable within-episode updates
         self._cold = ColdStorage(db_path)
         self._fact_index = FactIndex(db_path)
         self._hot_cache = HotCache(
@@ -138,7 +140,10 @@ class JevalMemory:
             token_ceiling=hot_cache_token_ceiling,
             eviction_weights=eviction_weights,
         )
-        self._novelty_gate = NoveltyGate(self._encoder, threshold=novelty_threshold)
+        self._novelty_gate = NoveltyGate(
+            self._encoder,
+            threshold=novelty_threshold,
+        )
         self._anchor_extractor = AnchorExtractor()
         self._contradiction_detector = ContradictionDetector(self._encoder, self._hot_cache)
         self._artifact_detector = _ArtifactDetector()
@@ -147,7 +152,10 @@ class JevalMemory:
         self._extractive = ExtractiveBackend()
         self._schema_verifier = SchemaGapVerifier()
         self._bm25 = BM25Index()
-        self._graph = CoRetrievalGraph(db_path.parent / "co_retrieval.db")
+        self._graph = CoRetrievalGraph(
+            db_path.parent / "co_retrieval.db",
+            frozen_mode=frozen_mode,
+        )
 
         if compressor is not None:
             self._compressor = compressor
@@ -191,8 +199,15 @@ class JevalMemory:
         # 1. cold storage — unconditional
         cold_id = self._cold.append(text, seq_id, self._session_id)
 
-        # 2. novelty gate
+        # 2. novelty gate (embedding-based)
         is_novel, epe_novelty = self._novelty_gate.is_novel(text)
+
+        # 2b. schema novelty gate (v3.0 §1.10)
+        is_schema_novel, schema_novelty_score = self._novelty_gate.is_schema_novel(text)
+        if is_schema_novel:
+            # Unknown artifact type - enqueue for offline schema induction
+            self._novelty_gate.enqueue_for_induction(text)
+
         if not is_novel:
             return {
                 "action": "cold_only",
@@ -207,6 +222,7 @@ class JevalMemory:
                 "anchors": [],
                 "token_count_original": len(text.split()),
                 "token_count_compressed": None,
+                "schema_novelty": schema_novelty_score,
             }
 
         # 3. entity extraction + fact index
@@ -243,6 +259,9 @@ class JevalMemory:
             text, compressed, content_type
         )
 
+        # 8b. R_build fidelity risk (v3.0)
+        r_build = self._combined_epe.compute_r_build(text, compressed, content_type)
+
         # 9. hot cache write
         orig_emb = self._encoder.encode([text])[0]
         comp_emb = self._encoder.encode([compressed])[0]
@@ -256,6 +275,7 @@ class JevalMemory:
                 "cosine_epe": cosine_epe,
                 "schema_gap": schema_gap,
                 "epe_final": epe_final,
+                "r_build": r_build,  # v3.0: fidelity risk for hot trust
                 "original_seq_id": seq_id,
                 "budget": self._last_budget,
             },
@@ -282,6 +302,7 @@ class JevalMemory:
             "cosine_epe": cosine_epe,
             "schema_gap": schema_gap,
             "epe_final": epe_final,
+            "r_build": r_build,  # v3.0: fidelity risk score
             "content_type": content_type,
             "budget": self._last_budget,
             "anchors": anchors,
@@ -297,6 +318,12 @@ class JevalMemory:
         anchors: list[str],
         has_high_ref: bool,
     ) -> tuple[str, str]:
+        """
+        Compress with v3.0 R_build fidelity gate (§1.5).
+
+        Gate decision: accept candidate iff R_build ≤ τ_commit (0.35)
+        This prevents lossy compressions from entering hot cache.
+        """
         schema_type = (
             content_type
             if content_type in self._schema_verifier._compiled
@@ -315,6 +342,9 @@ class JevalMemory:
 
         self._last_budget = budget
 
+        # v3.0: R_build threshold for hot cache admission
+        tau_commit = 0.35
+
         orig_emb = self._encoder.encode([text])[0]
         for attempt in range(3):
             current_budget = min(budget + 0.2 * attempt, 1.0)
@@ -323,15 +353,17 @@ class JevalMemory:
             except (TimeoutError, RuntimeError):
                 return self._extractive_fallback(text, budget), "extractive_fallback"
 
-            # Fidelity gate must reflect fact loss, not just embedding drift.
-            # Gate on CombinedEPE (cosine EPE + schema gap between original and candidate).
-            cosine_epe, schema_gap, epe_final = self._combined_epe.compute(
+            # v3.0 Fidelity gate: R_build ≤ τ_commit
+            # This catches both embedding drift AND fact loss
+            r_build = self._combined_epe.compute_r_build(
                 text, candidate, content_type
             )
 
-            if epe_final <= self._fidelity_threshold:
+            if r_build <= tau_commit:
                 return candidate, "cached"
 
+        # All candidates exceeded R_build threshold - use extractive fallback
+        # (which preserves original text, so R_build = 0)
         return self._extractive_fallback(text, budget), "extractive_fallback"
 
     def _extractive_fallback(self, text: str, budget: float) -> str:
@@ -345,10 +377,36 @@ class JevalMemory:
 
     def retrieve(self, query: str, k: int = 5) -> str:
         """Three-pass retrieval: cosine + BM25 + co-retrieval graph."""
+        return self.retrieve_with_routing(query, k=k, routing_preference="hot_cache")
+
+    def retrieve_with_routing(
+        self,
+        query: str,
+        k: int = 5,
+        routing_preference: str = "hot_cache",
+    ) -> str:
+        """
+        Explicit routing control (§2.1):
+
+        - hot_cache: cosine retrieval from hot cache only
+        - enriched: hot cache + cold storage append
+        - cold_storage: cold storage search only
+        """
+        if routing_preference == "cold_storage":
+            # Cold storage only
+            return self._cold_fallback(query, k)
+
         # Pass 1: cosine from hot cache
         hot_results = self._hot_cache.retrieve(query, k=k * 2)
         hot_ids = [str(r["seq_id"]) for r in hot_results]
 
+        if routing_preference == "hot_cache":
+            # Hot cache only
+            if hot_results:
+                return "\n".join(r["text"] for r in hot_results[:k])
+            return self._cold_fallback(query, k)
+
+        # enriched: hot cache + cold storage append
         # Pass 2: BM25 lexical search
         bm25_results = self._bm25.search(query, top_k=k * 2)
         bm25_ids = [seg_id for seg_id, _ in bm25_results]
@@ -363,13 +421,10 @@ class JevalMemory:
         # Merge all candidate IDs
         all_ids = list(dict.fromkeys(seed_ids + graph_ids))
 
-        # Record co-retrieval for graph learning
-        if seed_ids:
-            self._graph.record_retrieval(seed_ids[:k])
-
         # Fetch content — prefer hot cache, fall back to cold storage
         hot_map = {str(r["seq_id"]): r["text"] for r in hot_results}
         results = []
+        cold_hit_ids = []
         for sid in all_ids[:k]:
             if sid in hot_map:
                 results.append(hot_map[sid])
@@ -378,8 +433,15 @@ class JevalMemory:
                     cold = self._cold.get_by_seq_id(int(sid), self._session_id)
                     if cold:
                         results.append(cold["content"])
+                        cold_hit_ids.append(sid)
                 except Exception:
                     pass
+
+        # Record co-retrieval for graph learning
+        # Cold hits get stronger edge weights (§1.12)
+        if seed_ids:
+            was_cold_hit = len(cold_hit_ids) > 0
+            self._graph.record_retrieval(seed_ids[:k], was_cold_hit=was_cold_hit)
 
         if results:
             return "\n".join(results)

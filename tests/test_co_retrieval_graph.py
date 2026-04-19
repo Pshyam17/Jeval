@@ -78,6 +78,8 @@ def test_multi_segment_retrieval_generates_all_pairs(graph):
 
 def test_get_neighbors_top_k_and_min_weight(graph):
     # build edges: a-b strong, a-c medium, a-d weak
+    # With SMOOTHING=2.0: weight = count/(count+2)
+    # a-b: 20/(20+2) = 0.909, a-c: 10/(10+2) = 0.833, a-d: 2/(2+2) = 0.5
     for _ in range(20):
         graph.record_retrieval(["a", "b"])
     for _ in range(10):
@@ -85,8 +87,8 @@ def test_get_neighbors_top_k_and_min_weight(graph):
     for _ in range(2):
         graph.record_retrieval(["a", "d"])
 
-    # min_weight=0.3 should filter out d (weight ≈ 2/7 ≈ 0.286)
-    neighbors = graph.get_neighbors("a", min_weight=0.3, top_k=5)
+    # min_weight=0.55 should filter out d (weight = 0.5)
+    neighbors = graph.get_neighbors("a", min_weight=0.55, top_k=5)
     neighbor_ids = [n[0] for n in neighbors]
     assert "b" in neighbor_ids
     assert "c" in neighbor_ids
@@ -124,9 +126,11 @@ def test_decay_reduces_weights(graph):
 
 
 def test_decay_deletes_below_threshold(graph):
-    # single co-retrieval → weight ≈ 0.167; decay enough times to drop below 0.05
+    # single co-retrieval → weight = 1/(1+2) = 0.333
+    # decay enough times to drop below 0.05: 0.333 * 0.95^n < 0.05
+    # n > log(0.05/0.333) / log(0.95) ≈ 37.2, so 38 decays needed
     graph.record_retrieval(["a", "b"])
-    for _ in range(25):   # 0.167 * 0.95^25 ≈ 0.047 < 0.05
+    for _ in range(40):   # 0.333 * 0.95^40 ≈ 0.043 < 0.05
         graph.decay()
     w = graph.get_edge_weight("a", "b")
     assert w == 0.0

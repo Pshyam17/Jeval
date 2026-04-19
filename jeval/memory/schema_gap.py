@@ -179,3 +179,100 @@ class SchemaGapVerifier:
                 best_count = count
                 best_type = ctype
         return best_type
+
+    def compute_gap_truncation_aware(
+        self,
+        original: str,
+        compressed: str,
+        content_type: str,
+        truncation_ratio: Optional[float] = None,
+    ) -> float:
+        """
+        Compute schema gap with truncation correction (§1.6).
+
+        Problem: 800-char truncation before ingestion destroys schema facts,
+        making schema_gap artificially low.
+
+        Solution: Apply correction factor when truncation ratio is known.
+
+        Let r = len_trunc / max(1, len_orig)  (truncation ratio)
+
+        Truncation-aware schema gap:
+          schema_gap' = schema_gap × (1 − 0.5 × (1 − min(1, r)))
+
+        Behavior:
+        - If r = 1.0 (no truncation): schema_gap' = schema_gap × 1.0
+        - If r = 0.5 (50% truncated): schema_gap' = schema_gap × 0.75
+        - If r = 0.0 (fully truncated): schema_gap' = schema_gap × 0.5
+
+        Why 0.5 correction factor? Conservative estimate: truncation loses
+        at most half the schema facts not already detected.
+
+        Implementation note: If truncation ratio is unknown, use
+        schema_gap' = schema_gap (no correction).
+        """
+        # Compute base schema gap
+        schema_gap = self.compute_gap_pair(original, compressed, content_type)
+
+        # Apply truncation correction if ratio is known
+        if truncation_ratio is None:
+            return schema_gap
+
+        # Clamp ratio to [0, 1]
+        r = max(0.0, min(1.0, truncation_ratio))
+
+        # Correction factor: 1 - 0.5 * (1 - r)
+        correction = 1.0 - 0.5 * (1.0 - r)
+
+        return schema_gap * correction
+
+    def compute_fit(self, text: str, schema_type: str) -> float:
+        """
+        Compute fit score for schema novelty detection (§1.10).
+
+        Fit(x, s) = |required_facts(s) ∩ facts_extracted(x)| / |required_facts(s)|
+        → Fraction of schema s's required facts found in artifact x
+
+        Returns:
+        - 1.0 if all required schema facts are present
+        - 0.0 if no required schema facts are present
+        - 0.0 if schema_type has no schema definition
+        """
+        compiled = self._compiled.get(schema_type, {})
+        required = compiled.get("required", {})
+
+        if not required:
+            return 0.0
+
+        # Count matched required facts
+        matched = sum(1 for pat in required.values() if pat.search(text))
+
+        return matched / len(required)
+
+    def compute_novelty(self, text: str, schema_types: Optional[list[str]] = None) -> float:
+        """
+        Compute novelty score for schema novelty detection (§1.10).
+
+        Novelty(x | S) = 1 − max_{s ∈ S} Fit(x, s)
+        → 1.0 if no schema matches (fully novel)
+        → 0.0 if some schema fits perfectly
+
+        Gate decision:
+        If Novelty(x | S) > τ_novel (0.50):
+          mark artifact as UNKNOWN
+          store in cold storage (avoid aggressive hot compression)
+          enqueue x for offline schema induction
+        """
+        types_to_check = schema_types or list(self._compiled.keys())
+
+        if not types_to_check:
+            return 1.0  # No schemas = fully novel
+
+        # Find best fit across all schemas
+        best_fit = 0.0
+        for schema_type in types_to_check:
+            fit = self.compute_fit(text, schema_type)
+            if fit > best_fit:
+                best_fit = fit
+
+        return 1.0 - best_fit
