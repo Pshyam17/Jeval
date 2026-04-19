@@ -16,6 +16,8 @@ from jeval.compress.extractive import ExtractiveBackend
 from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.epe.combined import CombinedEPE
 from jeval.memory.anchor_extractor import AnchorExtractor
+from jeval.memory.bm25_index import BM25Index
+from jeval.memory.co_retrieval_graph import CoRetrievalGraph
 from jeval.memory.cold_storage import ColdStorage
 from jeval.memory.confidence_gate import ConfidenceGate
 from jeval.memory.contradiction_detector import ContradictionDetector
@@ -32,8 +34,6 @@ from jeval.strata.classifier import ContentClassifier
 logger = logging.getLogger(__name__)
 
 # Base budgets per content type — starting point before EPE modulation.
-# These are lower than v1 floors because beta=1.0 EPE amplification can
-# nearly double them for novel, schema-complete segments.
 _BASE_BUDGETS: dict[str, float] = {
     "FACTUAL": 0.50,
     "CAUSAL": 0.45,
@@ -58,9 +58,9 @@ class _NIMCaller:
             api_key = os.environ.get("NVIDIA_API_KEY", "")
             self._client = OpenAI(
                 api_key=api_key,
-                base_url="https://integrate.api.nvidia.com/v1",
+                base_url=os.environ.get("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
             )
-            self._model = "mistralai/mistral-small-3.1-24b-instruct-2503"
+            self._model = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
             self._available = bool(api_key)
         except ImportError:
             self._client = None
@@ -97,11 +97,11 @@ class JevalMemory:
     def __init__(
         self,
         db_path: Path | str = ".jeval/memory.db",
-        hot_cache_token_ceiling: int = 8000,
-        novelty_threshold: float = 0.15,
+        hot_cache_token_ceiling: int = 32000,
+        novelty_threshold: float = 0.05,
         fidelity_threshold: float = 0.25,
-        alpha: float = 0.5,           # EPE blend weight (cosine vs schema gap)
-        beta: float = 1.0,            # budget modulation strength
+        alpha: float = 0.5,
+        beta: float = 1.0,
         high_confidence: float = 0.7,
         low_confidence: float = 0.4,
         miss_threshold: int = 2,
@@ -127,8 +127,6 @@ class JevalMemory:
         self._turn_counter = 0
         self._last_budget: float = 0.5
 
-        # query log is always at .jeval/query_log.jsonl regardless of db_path —
-        # the validation script and demo system both expect this fixed location.
         _jeval_dir = Path(".jeval")
         _jeval_dir.mkdir(parents=True, exist_ok=True)
         self._query_log_path = _jeval_dir / "query_log.jsonl"
@@ -148,12 +146,14 @@ class JevalMemory:
         self._segmenter = SessionSegmenter()
         self._extractive = ExtractiveBackend()
         self._schema_verifier = SchemaGapVerifier()
+        self._bm25 = BM25Index()
+        self._graph = CoRetrievalGraph(db_path.parent / "co_retrieval.db")
 
         if compressor is not None:
             self._compressor = compressor
         else:
             caller = _caller or _NIMCaller()
-            self._compressor = TimeoutCompressor(caller, timeout_seconds=3.0)
+            self._compressor = TimeoutCompressor(caller, timeout_seconds=30.0)
 
         self._combined_epe = CombinedEPE(self._encoder, self._schema_verifier, alpha=alpha)
         self._confidence_gate = ConfidenceGate(
@@ -233,7 +233,7 @@ class JevalMemory:
             for e in entities
         )
 
-        # 7. LLM compression with fidelity gate (uses combined EPE budget formula)
+        # 7. LLM compression with fidelity gate
         compressed, action = self._compress_with_fidelity_gate(
             text, content_type, anchors, has_high_ref
         )
@@ -243,7 +243,7 @@ class JevalMemory:
             text, compressed, content_type
         )
 
-        # 9. hot cache write — original embedding tracked for novelty gate
+        # 9. hot cache write
         orig_emb = self._encoder.encode([text])[0]
         comp_emb = self._encoder.encode([compressed])[0]
         self._hot_cache.store(
@@ -262,7 +262,10 @@ class JevalMemory:
         )
         self._novelty_gate.update_working_set(text, orig_emb)
 
-        # 10. async: contradiction detection + recompressor check
+        # 10. BM25 index update
+        self._bm25.add(str(seq_id), text)
+
+        # 11. async: contradiction detection + recompressor check
         threading.Thread(
             target=self._async_post_ingest,
             args=(text, seq_id, self._turn_counter),
@@ -275,7 +278,7 @@ class JevalMemory:
             "action": action,
             "seq_id": seq_id,
             "epe_novelty": epe_novelty,
-            "epe_fidelity": cosine_epe,  # backward-compat alias
+            "epe_fidelity": cosine_epe,
             "cosine_epe": cosine_epe,
             "schema_gap": schema_gap,
             "epe_final": epe_final,
@@ -294,19 +297,13 @@ class JevalMemory:
         anchors: list[str],
         has_high_ref: bool,
     ) -> tuple[str, str]:
-        """
-        Compute budget via combined EPE formula, apply overrides, then compress.
-        Budget = base * (1 + beta * epe_final) clipped to [base, 1.0].
-        """
-        # schema gap on original signals how information-dense this segment is.
-        # NLI types (FACTUAL/CAUSAL/…) don't match schema keys — auto-detect.
         schema_type = (
             content_type
             if content_type in self._schema_verifier._compiled
             else self._schema_verifier.detect_schema_type(text)
         )
         schema_gap_original = self._schema_verifier.compute_gap(text, schema_type)
-        cosine_epe_proxy = 1.0  # novelty confirmed above, treat as fully novel
+        cosine_epe_proxy = 1.0
 
         epe_for_budget = self._alpha * cosine_epe_proxy + (1.0 - self._alpha) * schema_gap_original
 
@@ -335,7 +332,7 @@ class JevalMemory:
         return self._extractive_fallback(text, budget), "extractive_fallback"
 
     def _extractive_fallback(self, text: str, budget: float) -> str:
-        return self._extractive.compress(text, budget)
+        return text  # keep original when LLM unavailable
 
     def _async_post_ingest(self, text: str, seq_id: int, turn: int) -> None:
         stale_ids = self._contradiction_detector.check(text, self._session_id)
@@ -344,74 +341,52 @@ class JevalMemory:
                 self._hot_cache.mark_stale(sid)
 
     def retrieve(self, query: str, k: int = 5) -> str:
-        query_type = self._query_classifier.classify(query)
+        """Three-pass retrieval: cosine + BM25 + co-retrieval graph."""
+        # Pass 1: cosine from hot cache
+        hot_results = self._hot_cache.retrieve(query, k=k * 2)
+        hot_ids = [str(r["seq_id"]) for r in hot_results]
 
-        # precision and entity queries bypass the confidence gate; still logged
-        # so the validation script and query-log analysis see every retrieve call.
-        if query_type in ("precision", "ambiguous"):
-            seq_id = self._query_classifier.extract_seq_id(query)
-            precision_results: list[dict] = []
-            if seq_id is not None:
-                cold = self._cold.get_by_seq_id(seq_id, self._session_id)
-                if cold:
-                    precision_results.append(cold)
-            entity_hint = self._query_classifier.extract_entity_hint(query)
-            if entity_hint:
-                facts = self._fact_index.get_by_entity(entity_hint, self._session_id)
-                for f in facts:
-                    cold = self._cold.get_by_id(f["segment_id"])
+        # Pass 2: BM25 lexical search
+        bm25_results = self._bm25.search(query, top_k=k * 2)
+        bm25_ids = [seg_id for seg_id, _ in bm25_results]
+
+        # Pass 3: graph walk from seed nodes
+        seed_ids = list(dict.fromkeys(hot_ids + bm25_ids))
+        graph_ids = []
+        for sid in seed_ids[:5]:
+            neighbors = self._graph.get_neighbors(sid, min_weight=0.2, top_k=3)
+            graph_ids += [n[0] for n in neighbors]
+
+        # Merge all candidate IDs
+        all_ids = list(dict.fromkeys(seed_ids + graph_ids))
+
+        # Record co-retrieval for graph learning
+        if seed_ids:
+            self._graph.record_retrieval(seed_ids[:k])
+
+        # Fetch content — prefer hot cache, fall back to cold storage
+        hot_map = {str(r["seq_id"]): r["text"] for r in hot_results}
+        results = []
+        for sid in all_ids[:k]:
+            if sid in hot_map:
+                results.append(hot_map[sid])
+            else:
+                try:
+                    cold = self._cold.get_by_seq_id(int(sid), self._session_id)
                     if cold:
-                        precision_results.append(cold)
-            context_results = self._hot_cache.retrieve(query, k=k) if query_type == "ambiguous" else []
-            if not precision_results and not context_results:
-                cold_results = self._cold.search(query, limit=k)
-                self._log_query(query, query_type, "cold_storage", 0.0, -1)
-                return self._format_cold(cold_results)
-            self._log_query(query, query_type, "hot_cache", 1.0, -1)
-            return self._query_classifier.merge_results(precision_results, context_results)
+                        results.append(cold["content"])
+                except Exception:
+                    pass
 
-        if query_type == "entity":
-            context_results = self._hot_cache.retrieve(query, k=k)
-            if not context_results:
-                context_results = self._cold.search(query, limit=k)
-            if not context_results:
-                self._log_query(query, query_type, "cold_storage", 0.0, -1)
-                return self._format_cold(self._cold.search("", limit=k))
-            self._log_query(query, query_type, "hot_cache", 1.0, -1)
-            return self._format_hot(context_results)
+        if results:
+            return "\n".join(results)
 
-        # context query — use confidence gate
-        hot_results = self._hot_cache.retrieve(query, k=k)
+        # Final fallback: cold storage search
+        return self._cold_fallback(query, k)
 
-        if not hot_results:
-            return self._cold_fallback(query, k)
-
-        top = hot_results[0]
-        original = self._cold.get_by_seq_id(top["seq_id"], self._session_id)
-        original_text = original["content"] if original else top["text"]
-
-        routing, confidence = self._confidence_gate.route(
-            query, top["text"], original_text
-        )
-
-        self._log_query(query, query_type, routing, confidence, top["seq_id"])
-
-        if routing == "hot_cache":
-            self._recompressor.record_hit(top["seq_id"])
-            return self._format_hot(hot_results)
-
-        elif routing == "enriched":
-            self._recompressor.record_hit(top["seq_id"])
-            cold = self._cold.search(query, limit=2)
-            return self._format_merged(hot_results, cold)
-
-        else:  # cold_storage
-            self._recompressor.record_miss(top["seq_id"], query, self._turn_counter)
-            self._recompressor.check_and_rewrite(top["seq_id"], self._turn_counter)
-            cold = self._cold.search(query, limit=k)
-            if not cold:
-                cold = self._cold.search("", limit=k)
-            return self._format_cold(cold)
+    def memory_retrieve(self, query: str, top_k: int = 5) -> str:
+        """Alias for retrieve() — AMA-Bench interface."""
+        return self.retrieve(query, k=top_k)
 
     def _cold_fallback(self, query: str, k: int) -> str:
         cold = self._cold.search(query, limit=k)
@@ -506,8 +481,8 @@ class JevalMemory:
         )
         self._novelty_gate.clear()
         self._anchor_extractor.reset()
+        self._bm25.clear()
         self._contradiction_detector = ContradictionDetector(
             self._encoder, self._hot_cache
         )
-        # recompressor gets fresh hot cache reference
         self._recompressor._hot_cache = self._hot_cache

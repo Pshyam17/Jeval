@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from jeval.compress.extractive import ExtractiveBackend
 from jeval.benchmarks.ama_bench_eval import (
     ANSWER_PROMPT,
     JUDGE_PROMPT,
@@ -39,7 +40,7 @@ from jeval.benchmarks.ama_bench_eval import (
 )
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
+_MODEL = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
 
 
 # ── NIM client with retry ─────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ _MODEL = "mistralai/mistral-small-3.1-24b-instruct-2503"
 def _client() -> OpenAI:
     return OpenAI(
         api_key=os.environ["NVIDIA_API_KEY"],
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url=os.environ.get("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
     )
 
 

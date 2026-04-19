@@ -40,7 +40,7 @@ from jeval.encoders.sentence_encoder import FrozenEncoder
 from jeval.ingest.base import Segment, Session
 from jeval.memory.jeval_memory import JevalMemory as JevalMemoryV2
 
-_MODEL   = "mistralai/mistral-small-3.1-24b-instruct-2503"
+_MODEL   = os.environ.get("JEVAL_NIM_MODEL", "mistralai/mistral-small-3.1-24b-instruct-2503")
 _DOMAINS = ["Game", "EMBODIED_AI", "OPENWORLD_QA", "TEXT2SQL", "SOFTWARE", "WEB"]
 
 
@@ -49,7 +49,7 @@ _DOMAINS = ["Game", "EMBODIED_AI", "OPENWORLD_QA", "TEXT2SQL", "SOFTWARE", "WEB"
 def _client() -> OpenAI:
     return OpenAI(
         api_key=os.environ["NVIDIA_API_KEY"],
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url=os.environ.get("JEVAL_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
     )
 
 
@@ -152,30 +152,14 @@ class JevalMemory:
         self.encoder = encoder or FrozenEncoder()
         self.predictor = predictor
 
-        # Use v2.0 full memory system when predictor is provided
-        # Otherwise fall back to simple adaptive compressor for compatibility
-        if predictor is not None:
-            from jeval.compress.adaptive import AdaptiveCompressor
-            backend = backend or ExtractiveBackend()
-            self._compressor = AdaptiveCompressor(
-                encoder=self.encoder,
-                predictor=predictor,
-                backend=backend,
-            )
-            self._v2_memory = JevalMemoryV2(
-                db_path=db_path,
-                fidelity_threshold=fidelity_threshold,
-                alpha=alpha,
-                beta=beta,
-                encoder=self.encoder,
-                compressor=self._compressor,
-            )
-        else:
-            self._v2_memory = None
-            self._segments: List[str] = []
-            self._segment_embeddings: Optional[np.ndarray] = None
-            self._compressed: str = ""
-            self._token_reduction: float = 0.0
+        # Always use v2.0 full memory pipeline
+        self._v2_memory = JevalMemoryV2(
+            db_path=db_path,
+            fidelity_threshold=fidelity_threshold,
+            alpha=alpha,
+            beta=beta,
+            encoder=self.encoder,
+        )
 
     def memory_construction(self, traj_text: str, task: str = "") -> "JevalMemory":
         """Build compressed memory from raw trajectory text."""
