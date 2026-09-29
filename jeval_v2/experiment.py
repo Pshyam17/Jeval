@@ -72,6 +72,8 @@ def provenance(path):
 
 
 def grouped_metrics(labels, groups, values, bootstrap=1000, seed=0):
+    if bootstrap < 1:
+        raise ValueError("bootstrap must be positive")
     known = labels >= 0
     labels, groups = labels[known], groups[known]
     if len(np.unique(labels)) != 2:
@@ -81,18 +83,18 @@ def grouped_metrics(labels, groups, values, bootstrap=1000, seed=0):
     index = [np.where(groups == group)[0] for group in unique]
     rng = np.random.default_rng(seed)
     draws = rng.integers(0, len(unique), size=(bootstrap, len(unique)))
+    resamples = [np.concatenate([index[i] for i in draw]) for draw in draws]
+    resamples = [ids for ids in resamples if len(np.unique(labels[ids])) == 2]
+    sampled_metrics = {}
     for name, full in values.items():
         score = full[known]
         result[name] = {"auprc": float(average_precision_score(labels, score)),
                         "auroc": float(roc_auc_score(labels, score))}
         for metric, fn in (("auprc", average_precision_score), ("auroc", roc_auc_score)):
-            samples = []
-            for draw in draws:
-                ids = np.concatenate([index[i] for i in draw])
-                if len(np.unique(labels[ids])) == 2:
-                    samples.append(fn(labels[ids], score[ids]))
+            samples = np.array([fn(labels[ids], score[ids]) for ids in resamples])
+            sampled_metrics[name, metric] = samples
             result[name][f"group_bootstrap_{metric}_95pct"] = (
-                np.quantile(samples, [0.025, 0.975]).tolist() if samples else None)
+                np.quantile(samples, [0.025, 0.975]).tolist() if len(samples) else None)
         for fraction in (0.05, 0.10, 0.20):
             count = max(1, int(np.ceil(len(labels) * fraction)))
             rank = np.argsort(-score)[:count]
@@ -100,15 +102,10 @@ def grouped_metrics(labels, groups, values, bootstrap=1000, seed=0):
                 labels[rank].sum() / labels.sum())
     if "epe" in values and "cosine" in values:
         paired = {}
-        for metric, fn in (("auprc", average_precision_score), ("auroc", roc_auc_score)):
-            differences = []
-            for draw in draws:
-                ids = np.concatenate([index[i] for i in draw])
-                if len(np.unique(labels[ids])) == 2:
-                    differences.append(fn(labels[ids], values["epe"][known][ids]) -
-                                       fn(labels[ids], values["cosine"][known][ids]))
+        for metric in ("auprc", "auroc"):
+            differences = sampled_metrics["epe", metric] - sampled_metrics["cosine", metric]
             paired[metric] = {"difference": result["epe"][metric] - result["cosine"][metric],
-                              "group_bootstrap_95pct": np.quantile(differences, [0.025, 0.975]).tolist() if differences else None}
+                              "group_bootstrap_95pct": np.quantile(differences, [0.025, 0.975]).tolist() if len(differences) else None}
         result["epe_minus_cosine"] = paired
     return result
 
@@ -142,7 +139,7 @@ def train(args):
     valid_ids = np.where(splits == "validation")[0]
     if not len(train_ids) or not len(valid_ids):
         raise ValueError("both train and validation pairs are required")
-    selection = ("auprc" if len(set(labels[valid_ids][labels[valid_ids] >= 0])) == 2 else "mse") if args.selection == "auto" else args.selection
+    selection = args.selection
     if selection == "auprc" and len(set(labels[valid_ids][labels[valid_ids] >= 0])) != 2:
         raise ValueError("validation AUPRC selection requires both labeled harm classes")
     device = torch.device(args.device)
@@ -301,8 +298,8 @@ def main():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--selection", choices=["auto", "mse", "auprc"], default="auto",
-                   help="choose checkpoint on validation; AUPRC needs both harm classes")
+    p.add_argument("--selection", choices=["mse", "auprc"], default="mse",
+                   help="headline uses label-free MSE; labeled AUPRC is an explicit ablation")
     p.set_defaults(run=train)
     p = sub.add_parser("evaluate")
     p.add_argument("--embeddings", required=True)

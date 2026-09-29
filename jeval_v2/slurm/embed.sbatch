@@ -1,10 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=jeval-embed
-#SBATCH --partition=gpu-short
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=02:00:00
+#SBATCH --time=01:30:00
 #SBATCH --output=jeval-embed-%j.log
 set -euo pipefail
 : "${JEVAL_REPO_ROOT:?Set JEVAL_REPO_ROOT to the absolute repository root}"

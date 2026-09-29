@@ -41,7 +41,8 @@ def diagnose_arrays(original, compressed, splits, groups, ridge=1e-3,
                    "matrix": unit(c[held] + design @ coef)}
     errors = {name: np.sum((x[held] - pred) ** 2, axis=1)
               for name, pred in predictions.items()}
-    delta = errors["identity"] - errors["matrix"]
+    delta = errors["intercept"] - errors["matrix"]
+    identity_delta = errors["identity"] - errors["matrix"]
     names, inverse = np.unique(groups[held], return_inverse=True)
     group_delta = np.array([delta[inverse == i].mean() for i in range(len(names))])
     rng = np.random.default_rng(seed)
@@ -55,6 +56,7 @@ def diagnose_arrays(original, compressed, splits, groups, ridge=1e-3,
         "mean_intercept_squared_error": float(errors["intercept"].mean()),
         "mean_learned_squared_error": float(errors["matrix"].mean()),
         "mean_group_intercept_error_reduction": float(np.mean([np.mean((errors["identity"]-errors["intercept"])[inverse == i]) for i in range(len(names))])),
-        "mean_group_error_reduction": float(group_delta.mean()),
-        "group_bootstrap_95pct_error_reduction": interval.tolist(),
+        "mean_group_identity_to_matrix_reduction": float(np.mean([identity_delta[inverse == i].mean() for i in range(len(names))])),
+        "mean_group_intercept_to_matrix_reduction": float(group_delta.mean()),
+        "group_bootstrap_95pct_intercept_to_matrix_reduction": interval.tolist(),
     }
