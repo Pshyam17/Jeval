@@ -5,12 +5,12 @@ from torch.nn import functional as F
 
 
 class Predictor(nn.Module):
-    def __init__(self, dim: int, hidden: int = 512):
+    def __init__(self, dim: int, hidden: int = 1536):
         super().__init__()
         self.net = nn.Sequential(nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, dim))
 
     def forward(self, compressed):
-        return self.net(compressed)
+        return compressed + self.net(compressed)
 
 
 def scores(original, compressed, predictor):

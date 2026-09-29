@@ -2,6 +2,7 @@
 import argparse
 import json
 import random
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,12 @@ def embed(args):
 
     rows = read_pairs(args.pairs)
     model = SentenceTransformer(args.encoder, device=args.device)
+    max_tokens = model.max_seq_length
+    for row in rows:
+        for field in ("original", "compressed"):
+            length = len(model.tokenizer.encode(row[field], add_special_tokens=True))
+            if length > max_tokens:
+                raise ValueError(f"{row['id']} {field}: {length} tokens exceeds encoder limit {max_tokens}")
     originals = model.encode([r["original"] for r in rows], batch_size=args.batch_size,
                              convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
     compressed = model.encode([r["compressed"] for r in rows], batch_size=args.batch_size,
@@ -27,12 +34,23 @@ def embed(args):
                         ids=np.array([r["id"] for r in rows]),
                         groups=np.array([r["group_id"] for r in rows]),
                         splits=np.array([r["split"] for r in rows]),
-                        harm=np.array([r.get("harm", -1) for r in rows], dtype=np.int8))
+                        harm=np.array([r.get("harm", -1) for r in rows], dtype=np.int8),
+                        compression_ratio=np.array([len(r["compressed"].split()) / len(r["original"].split())
+                                                    for r in rows], dtype=np.float32))
     dest.with_suffix(".metadata.json").write_text(json.dumps({"encoder": args.encoder,
-        "pair_file": str(Path(args.pairs).resolve()), "count": len(rows)}, indent=2))
+        "pair_file": str(Path(args.pairs).resolve()), "pair_sha256": hashlib.sha256(Path(args.pairs).read_bytes()).hexdigest(),
+        "max_seq_length": max_tokens, "count": len(rows)}, indent=2))
+
+
+def provenance(path):
+    sidecar = Path(path).with_suffix(".metadata.json")
+    if not sidecar.exists():
+        raise ValueError(f"missing embedding provenance: {sidecar}")
+    return json.loads(sidecar.read_text())
 
 
 def train(args):
+    metadata = provenance(args.embeddings)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -46,7 +64,7 @@ def train(args):
         raise ValueError("both train and validation pairs are required")
     device = torch.device(args.device)
     model = Predictor(x.shape[1], args.hidden).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best = float("inf")
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -68,12 +86,18 @@ def train(args):
         if val_loss < best:
             best = val_loss
             torch.save({"state_dict": model.state_dict(), "dim": x.shape[1],
-                        "hidden": args.hidden, "seed": args.seed}, output)
+                        "hidden": args.hidden, "seed": args.seed, "encoder": metadata["encoder"],
+                        "embedding_sha256": hashlib.sha256(Path(args.embeddings).read_bytes()).hexdigest(),
+                        "training": {"lr": args.lr, "epochs": args.epochs, "batch_size": args.batch_size,
+                                     "weight_decay": args.weight_decay, "best_epoch": epoch + 1}}, output)
 
 
 def evaluate(args):
+    metadata = provenance(args.embeddings)
     data = np.load(args.embeddings, allow_pickle=False)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    if checkpoint["encoder"] != metadata["encoder"] or checkpoint["embedding_sha256"] != hashlib.sha256(Path(args.embeddings).read_bytes()).hexdigest():
+        raise ValueError("checkpoint and embeddings provenance mismatch")
     model = Predictor(checkpoint["dim"], checkpoint["hidden"])
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
@@ -81,19 +105,28 @@ def evaluate(args):
     if not len(selected):
         raise ValueError(f"no rows for split {args.split}")
     with torch.no_grad():
-        cosine, epe = scores(torch.from_numpy(data["original"][selected]).float(),
-                             torch.from_numpy(data["compressed"][selected]).float(), model)
+        originals = torch.from_numpy(data["original"][selected]).float()
+        compressed = torch.from_numpy(data["compressed"][selected]).float()
+        cosine, epe = scores(originals, compressed, model)
+        predicted = torch.nn.functional.normalize(model(compressed), dim=-1)
+        prediction_cosine = (predicted * torch.nn.functional.normalize(compressed, dim=-1)).sum(-1)
+    ratio = 1 - data["compression_ratio"][selected]
     labels = data["harm"][selected]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as handle:
-        for idx, cos, residual, label in zip(selected, cosine.tolist(), epe.tolist(), labels.tolist()):
+        for idx, cos, residual, length_score, pred_cos, label in zip(selected, cosine.tolist(), epe.tolist(), ratio.tolist(), prediction_cosine.tolist(), labels.tolist()):
             handle.write(json.dumps({"id": str(data["ids"][idx]), "group_id": str(data["groups"][idx]),
-                "split": args.split, "harm": label, "cosine": cos, "epe": residual}) + "\n")
+                "split": args.split, "harm": label, "cosine": cos, "epe": residual,
+                "identity_epe": 2 * cos, "compression_removed_fraction": length_score,
+                "prediction_cosine_to_compressed": pred_cos}) + "\n")
+    print(json.dumps({"mean_prediction_cosine_to_compressed": float(prediction_cosine.mean()),
+                      "mean_absolute_epe_minus_identity": float((epe - 2 * cosine).abs().mean())}))
     known = labels >= 0
     if known.sum() and len(set(labels[known])) == 2:
         metrics = {}
-        for name, values in (("cosine", cosine.numpy()), ("epe", epe.numpy())):
+        for name, values in (("cosine", cosine.numpy()), ("epe", epe.numpy()),
+                             ("compression_removed_fraction", ratio)):
             metrics[name] = {"auprc": average_precision_score(labels[known], values[known]),
                              "auroc": roc_auc_score(labels[known], values[known])}
             for fraction in (0.05, 0.10, 0.20):
@@ -122,8 +155,9 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=128)
-    p.add_argument("--hidden", type=int, default=512)
+    p.add_argument("--hidden", type=int, default=1536)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(run=train)
     p = sub.add_parser("evaluate")
