@@ -1,5 +1,7 @@
 # Jeval v2: cosine versus trained predictive error
 
+The [research log](RESEARCH_LOG.md) starts with the central hypothesis and records decisions and open work. The [experiment log](EXPERIMENT_LOG.md) tracks each hypothesis, setup, result, and takeaway; pending work is explicitly marked. [Benchmark manifests](benchmarks/README.md) cover LongMemEval-S cleaned (primary stale-state test) and LoCoMo (secondary conversation-memory test). No official benchmark data is committed.
+
 ## Scope
 
 One frozen encoder and one frozen compressor produce an original segment `x` and candidate memory `c`. The cosine score is `1 - cos(f(x), f(c))`. The predictor is trained only on `train` pairs to estimate the normalized original embedding from the normalized compressed embedding. Its test score is squared prediction residual. No test-set labels or conversations are used to train it.
