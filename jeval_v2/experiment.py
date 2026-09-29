@@ -10,6 +10,7 @@ import torch
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 from jeval_v2.data import read_pairs
+from jeval_v2.diagnose import diagnose_arrays
 from jeval_v2.model import Predictor, scores
 
 
@@ -47,6 +48,17 @@ def provenance(path):
     if not sidecar.exists():
         raise ValueError(f"missing embedding provenance: {sidecar}")
     return json.loads(sidecar.read_text())
+
+
+def diagnose(args):
+    metadata = provenance(args.embeddings)
+    with np.load(args.embeddings, allow_pickle=False) as data:
+        result = diagnose_arrays(data["original"], data["compressed"], data["splits"],
+                                 data["groups"], ridge=args.ridge, split=args.split,
+                                 bootstrap=args.bootstrap, seed=args.seed)
+    result["encoder"] = metadata["encoder"]
+    result["split"] = args.split
+    print(json.dumps(result, indent=2))
 
 
 def train(args):
@@ -149,6 +161,13 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--batch-size", type=int, default=64)
     p.set_defaults(run=embed)
+    p = sub.add_parser("diagnose", help="held-out label-free linear map versus identity")
+    p.add_argument("--embeddings", required=True)
+    p.add_argument("--split", choices=["validation", "test"], default="validation")
+    p.add_argument("--ridge", type=float, default=1e-3)
+    p.add_argument("--bootstrap", type=int, default=1000)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(run=diagnose)
     p = sub.add_parser("train")
     p.add_argument("--embeddings", required=True)
     p.add_argument("--output", required=True)

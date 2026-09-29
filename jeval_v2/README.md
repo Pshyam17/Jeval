@@ -27,11 +27,14 @@ From the repository root, in a Python 3.10+ environment:
 ```bash
 python -m pip install -r jeval_v2/requirements.txt
 python -m jeval_v2.experiment embed --pairs /path/to/pairs.jsonl --output outputs/pairs.npz
+python -m jeval_v2.experiment diagnose --embeddings outputs/pairs.npz --split validation
 python -m jeval_v2.experiment train --embeddings outputs/pairs.npz --output checkpoints/predictor.pt
 python -m jeval_v2.experiment evaluate --embeddings outputs/pairs.npz --checkpoint checkpoints/predictor.pt --split test --output outputs/test_scores.jsonl
 ```
 
 The test score file includes cosine, predictive residual, identity residual, and the fraction of whitespace-delimited words removed for the **same rows**. The latter is a cheap length baseline, not a tokenizer-specific compression ratio. Evaluation prints the mean cosine between the prediction and compressed embedding. Summary metrics print only when both harm classes have labels. Rejection fractions are descriptive and do not choose thresholds on test. The embedding step rejects text beyond the encoder token limit. Training checkpoints include the embedding file hash and encoder name, and evaluation requires an exact match. For a paper, compute grouped bootstrap confidence intervals and train an equally supervised classifier baseline on the same external training data; this scaffold has neither yet.
+
+The label-free `diagnose` gate fits a ridge-regularized linear correction from compressed to original embeddings on training groups, then compares squared error with identity on held-out groups. It reports mean cosine to the compressed input and a group-bootstrap interval for error reduction. Run on validation before model work; reserve test for a final check. A reconstruction gain establishes a learnable shift, not better harm detection. Near-identity cosine alone is not a stop rule. Fix ridge using validation only and record the choice.
 
 ## Northeastern Explorer
 
