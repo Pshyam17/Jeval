@@ -8,8 +8,8 @@ def unit(x):
 
 def fit_residual_map(compressed, original, groups, ridge=1e-3):
     """Fit x-c from c with equal total weight per training group."""
-    if ridge < 0:
-        raise ValueError("ridge must be nonnegative")
+    if ridge <= 0:
+        raise ValueError("ridge must be positive")
     compressed, original = unit(compressed), unit(original)
     _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
     weights = 1 / np.sqrt(counts[inverse])
@@ -34,10 +34,14 @@ def diagnose_arrays(original, compressed, splits, groups, ridge=1e-3,
     x, c = unit(original), unit(compressed)
     coef = fit_residual_map(c[train], x[train], groups[train], ridge)
     design = np.column_stack((c[held], np.ones(held.sum())))
-    predicted = unit(c[held] + design @ coef)
-    identity_error = np.sum((x[held] - c[held]) ** 2, axis=1)
-    learned_error = np.sum((x[held] - predicted) ** 2, axis=1)
-    delta = identity_error - learned_error
+    train_names = np.unique(groups[train])
+    shift = np.mean([np.mean((x[train] - c[train])[groups[train] == name], axis=0)
+                     for name in train_names], axis=0)
+    predictions = {"identity": c[held], "intercept": unit(c[held] + shift),
+                   "matrix": unit(c[held] + design @ coef)}
+    errors = {name: np.sum((x[held] - pred) ** 2, axis=1)
+              for name, pred in predictions.items()}
+    delta = errors["identity"] - errors["matrix"]
     names, inverse = np.unique(groups[held], return_inverse=True)
     group_delta = np.array([delta[inverse == i].mean() for i in range(len(names))])
     rng = np.random.default_rng(seed)
@@ -46,9 +50,11 @@ def diagnose_arrays(original, compressed, splits, groups, ridge=1e-3,
     return {
         "train_pairs": int(train.sum()), "held_out_pairs": int(held.sum()),
         "train_groups": int(len(set(groups[train]))), "held_out_groups": int(len(names)),
-        "ridge": ridge, "mean_cos_prediction_to_compressed": float(np.mean(np.sum(predicted * c[held], axis=1))),
-        "mean_identity_squared_error": float(identity_error.mean()),
-        "mean_learned_squared_error": float(learned_error.mean()),
+        "ridge": ridge, "mean_cos_prediction_to_compressed": float(np.mean(np.sum(predictions["matrix"] * c[held], axis=1))),
+        "mean_identity_squared_error": float(errors["identity"].mean()),
+        "mean_intercept_squared_error": float(errors["intercept"].mean()),
+        "mean_learned_squared_error": float(errors["matrix"].mean()),
+        "mean_group_intercept_error_reduction": float(np.mean([np.mean((errors["identity"]-errors["intercept"])[inverse == i]) for i in range(len(names))])),
         "mean_group_error_reduction": float(group_delta.mean()),
         "group_bootstrap_95pct_error_reduction": interval.tolist(),
     }

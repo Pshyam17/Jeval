@@ -16,6 +16,8 @@ def test_systematic_shift_improves_held_out_reconstruction_and_identity_does_not
     result = diagnose_arrays(original, compressed, splits, groups)
     assert result["mean_group_error_reduction"] > 0.1
     assert result["group_bootstrap_95pct_error_reduction"][0] > 0
+    assert result["mean_intercept_squared_error"] < result["mean_identity_squared_error"]
+    assert result["mean_learned_squared_error"] < result["mean_intercept_squared_error"]
 
     null = diagnose_arrays(original, original, splits, groups)
     assert abs(null["mean_group_error_reduction"]) < 1e-12
