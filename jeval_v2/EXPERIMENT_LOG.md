@@ -2,6 +2,16 @@
 
 Use one entry per hypothesis. **Result** must say whether it is a local synthetic check, a user-supplied simulation, a real-data measurement, or pending. No synthetic result may be described as a benchmark score. Dates use Pacific time.
 
+## E00 — Headline paired LoCoMo answer experiment (revised 2026-10-01; pending)
+
+**Hypothesis →** Given the same LoCoMo question, compressed memory, prompt, and answer model, an EPE-derived risk percentile leads to more correct/evidence-supported answers than a cosine-derived percentile.
+
+**Setup and experiment →** Freeze encoder, compressor, EPE checkpoint, LoCoMo release, question list, prompt template, model version, and decoding settings. Construct two prompts per question from the same memory. The only differing field is the 0–100 within-run midrank risk percentile; randomize A/B assignment and store the key separately. Run both through the same LLM; fill the blinded review sheet against official answers and evidence before opening the key. Primary descriptive comparison is paired counts (EPE-only correct, cosine-only correct, both, neither), with conversation-level breakdown over LoCoMo's ten source conversations. Report answer support and abstention separately. Do not infer missing facts from the risk score.
+
+**Result →** **Pending.** No compressed LoCoMo memories, score-joined question rows, LLM answers, or human judgments exist. `locomo_prompt_pairs.py` renders paired prompts and a review sheet, but does not call a model or calculate EPE.
+
+**Takeaways →** This directly tests the user's intended LLM-input comparison. It cannot claim better retrieval or source recovery. If both risk percentiles are nearly identical or the model ignores the field, the experiment may be null; report that rather than modifying the prompt after viewing test answers.
+
 ## E01 — Identity EPE is cosine (2026-09-28)
 
 **Hypothesis →** Identity prediction adds no ranking signal to cosine on unit embeddings.

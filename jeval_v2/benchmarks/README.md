@@ -1,6 +1,6 @@
 # Held-out benchmark manifests
 
-The selected **primary** target for stale-state failures is [LongMemEval-S cleaned](https://github.com/xiaowu0162/longmemeval#-data), reporting `knowledge-update` and `temporal-reasoning` slices and the complete 500-question result separately. [LoCoMo](https://github.com/snap-research/locomo#data) is a **secondary** conversation-memory evaluation with ten source conversations. No benchmark data is bundled or used for EPE training.
+The selected **primary** target is [LoCoMo](https://github.com/snap-research/locomo#data): paired runs of the same answer model with the same compressed memory, varying only whether the prompt contains cosine or EPE risk. [LongMemEval-S cleaned](https://github.com/xiaowu0162/longmemeval#-data) remains an optional later transfer benchmark; it is not part of the headline experiment. No benchmark data is bundled or used for EPE training. See the [LoCoMo protocol](../LOCOMO_PROTOCOL.md).
 
 Download/pin the official releases locally, then create question/evidence manifests:
 

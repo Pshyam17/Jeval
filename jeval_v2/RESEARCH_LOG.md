@@ -1,12 +1,20 @@
 # Jeval v2 research log
 
-## Central hypothesis (2026-09-28, Pacific time)
+## Current central hypothesis (revised 2026-10-01, Pacific time)
+
+On the same LoCoMo questions, with identical compressed memory, prompt wording, and answer model, providing an EPE-derived compression-risk percentile may produce more correct and evidence-supported answers than providing a cosine-derived percentile. Answers are compared in paired, blinded manual review. **Only the score varies between the two arms.** This tests the *usefulness of the score as model input*, not whether EPE improves retrieval, recovers deleted facts, or outperforms a full memory system. No result exists yet.
+
+The score cannot supply omitted evidence. On a hired→fired compression that only says “hired,” neither arm can know the later event; a useful signal may instead increase appropriate abstention. Compare both correctness and support, and record cases where the scores lead to identical prompts/answers. Use midrank percentiles to put the two score families on a common 0–100 scale; this is a presentation choice fixed before the test.
+
+## Earlier broader hypothesis (2026-09-28, superseded as the headline)
 
 For a **fixed compressor and budget**, the compression may impose a reproducible transform on source embeddings. A predictor trained on independent original–compression pairs could learn this transform. Its residual may then rank **question-relevant information loss** better than cosine distance, at equal encoder and data budgets. This only helps if (1) the transform generalizes beyond an intercept-only shift, (2) the encoder represents the lost state, and (3) the residual correlates with downstream harm. Pair-only scores cannot know which future question will be asked. A question-conditioned source retrieval fallback might repair missed state updates; surprisal is an optional triage signal that must earn its extra cost.
 
-**Primary falsification:** on held-out groups, a learned matrix must improve reconstruction over an intercept-only correction; on labeled benchmark questions, EPE must beat cosine/length at equal verification budgets and improve answer accuracy per verifier call, token, and millisecond. These are successive gates, not equivalent claims. No real-data result is available yet.
+**Earlier proposed falsification:** on held-out groups, a learned matrix would improve reconstruction over an intercept-only correction; an integrated verification system would improve accuracy per call, token, and millisecond. These remain exploratory diagnostics or future work. They are no longer the headline LoCoMo experiment. No real-data result is available yet.
 
 ## Scope and provenance
+
+**2026-10-01 correction:** The user narrowed the experiment to two parallel LoCoMo runs of the same answer model: one receives cosine risk and one EPE risk, with manual paired comparison. The earlier LongMemEval-first and verifier-policy designs below are historical proposals and should not be read as the active protocol. See [`LOCOMO_PROTOCOL.md`](LOCOMO_PROTOCOL.md).
 
 - `jeval_v1/` archives the original repository; its older `RESEARCH_LOG.md` records prior code work and is not evidence for v2.
 - `jeval_v2/` is a fresh detector scaffold. Its dataset JSONL is an input contract; no training corpus, compressor, encoder, harm labels, or benchmark answers have been produced by v2.

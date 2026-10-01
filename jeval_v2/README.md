@@ -1,6 +1,6 @@
 # Jeval v2: cosine versus trained predictive error
 
-The [research log](RESEARCH_LOG.md) starts with the central hypothesis and records decisions and open work. The [experiment log](EXPERIMENT_LOG.md) tracks each hypothesis, setup, result, and takeaway; pending work is explicitly marked. [Benchmark manifests](benchmarks/README.md) cover LongMemEval-S cleaned (primary stale-state test) and LoCoMo (secondary conversation-memory test). No official benchmark data is committed.
+The **headline experiment** is [two paired LoCoMo LLM runs](LOCOMO_PROTOCOL.md): the same question, compressed memory, prompt, and answer model; only the supplied risk percentile changes from cosine to EPE. Answers are compared in blinded manual review. The [research log](RESEARCH_LOG.md) records the revised hypothesis and historical decisions. The [experiment log](EXPERIMENT_LOG.md) tracks hypotheses, setups, results, and takeaways. [Benchmark manifests](benchmarks/README.md) cover LoCoMo and a deferred LongMemEval transfer test. No official benchmark data is committed.
 
 ## Scope
 
