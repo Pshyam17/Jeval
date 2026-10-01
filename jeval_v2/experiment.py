@@ -241,7 +241,8 @@ def evaluate(args):
     with output.open("w", encoding="utf-8") as handle:
         for j, idx in enumerate(selected):
             record = {"id": str(arrays["ids"][idx]), "group_id": str(arrays["groups"][idx]),
-                      "split": args.split}
+                      "split": args.split, "train_seed": int(checkpoint["seed"]),
+                      "train_selection": checkpoint.get("training", {}).get("selection")}
             record.update(harm=int(labels[j]), cosine=float(cosine[j]), epe=float(epe[j]),
                           identity_epe=float(2 * cosine[j]), compression_removed_fraction=float(ratio[j]),
                           compression_word_ratio=float(raw_ratio[j]),
