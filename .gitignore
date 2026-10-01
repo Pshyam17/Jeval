@@ -1,44 +1,7 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.egg-info/
-dist/
-build/
 .venv/
-*.egg
-
-# Testing
-.coverage
 .pytest_cache/
-htmlcov/
-
-# Environment
-.env
-*.env
-
-# macOS
-.DS_Store
-
-# Model checkpoints (large binaries — use git-lfs if you want to track these)
-*.pt
-*.pth
-*.ckpt
-
-# Generated outputs — never commit results or logs
-logs/
+outputs/
 checkpoints/
-train/data/
-benchmarks/results/
-ama_bench_results.jsonl
-ama_bench_summary.json
-benchmark_results.json
-
-# HuggingFace cache
-dataset/.cache/
-
-# Claude Code internal
-.claude/
-
-# Runtime data
-.jeval/
+*.log
