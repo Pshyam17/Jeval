@@ -45,3 +45,17 @@ The label-free `diagnose` gate fits a ridge-regularized linear correction on tra
 ## Northeastern Explorer
 
 Verify your assigned Slurm account and partition on the cluster before submission. Export absolute `JEVAL_REPO_ROOT`, `JEVAL_PYTHON`, paths, and `JEVAL_CACHE_DIR` on scratch/project storage; embed also needs `JEVAL_ENCODER` and `JEVAL_ENCODER_REVISION`. The CPU training script runs seeds 0–2 as an array and needs `JEVAL_CHECKPOINT_DIR`. Submit with `sbatch --account="${JEVAL_ACCOUNT}" --partition="${JEVAL_GPU_PARTITION}" jeval_v2/slurm/embed.sbatch`; submit the CPU training job with `sbatch --account="${JEVAL_ACCOUNT}" --partition="${JEVAL_CPU_PARTITION}" jeval_v2/slurm/train.sbatch`. Export variables using `sbatch --export=ALL` if your cluster does not propagate them by default. The scripts do not assume an account or CPU partition. Encoder cache is under `JEVAL_CACHE_DIR`; install dependencies and download models from a compute session, and keep output outside home quota.
+
+## LoCoMo best-of-N: cosine versus EPE selection
+
+Same frozen compressor, same N sampled candidates per segment; only the selection rule differs. `jeval_v2.locomo` holds the CPU logic and `jeval_v2.generate` the vLLM stages (`requirements-generate.txt`).
+
+1. `locomo segment` cuts each conversation into windows of `--turns` turns (default 6), keeping the session date and dialogue IDs.
+2. `generate compress` samples `--n` (default 8) candidates per segment at a fixed word-ratio budget.
+3. Per fold (5-fold, whole conversations: 6 train, 2 validation, 2 test), `locomo make-pairs` → `experiment embed` → `train` (label-free MSE selection) → `evaluate` scores the test conversations. Every conversation is tested exactly once, by a predictor that never saw it.
+4. `locomo select` picks one candidate per segment under four rules: `cosine` (lowest distance), `epe` (lowest residual), `random`, and `first`. Only candidates within `--tolerance` (default ±25%) of the word budget compete, so neither score wins by length; segments with none in band fall back to all candidates and are counted in `selection_stats.json`, along with each arm's realized word ratio and how often cosine and EPE agree. An uncompressed `original` arm is the reader's ceiling.
+5. `generate qa` answers every LoCoMo question (categories 1–4) from each arm's memory with one frozen reader, and `locomo report` gives token F1 per arm and category plus paired EPE-minus-cosine differences with a bootstrap over the 10 conversations.
+
+On the cluster, export the variables the scripts ask for (`JEVAL_LOCOMO`, `JEVAL_RUN_DIR`, `JEVAL_LLM`, `JEVAL_LLM_REVISION`, `JEVAL_RATIO`, `JEVAL_ENCODER`, `JEVAL_ENCODER_REVISION`, plus the existing repo, python, and cache variables) and run `slurm/run_locomo.sh`, which chains compress → fold array → QA with `afterok` dependencies. Not run on real data yet; no result is claimed.
+
+Limits: F1 is token-level without stemming, not an LLM judge; with 10 conversations the intervals will be wide; the compressor and reader share one model unless you separate them; the predictor trains on LoCoMo's own training conversations, which is label-free but not independent of the benchmark domain. `benchmarks/prepare.py` reads `qa["answer"]`, which category 5 questions may lack; the LoCoMo pipeline here skips category 5 and does not use that adapter.
