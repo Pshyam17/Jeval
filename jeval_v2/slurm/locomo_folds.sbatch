@@ -18,6 +18,8 @@ cd "${JEVAL_REPO_ROOT}"
 : "${JEVAL_CACHE_DIR:?Set JEVAL_CACHE_DIR to an absolute scratch/project cache path}"
 export HF_HOME="${JEVAL_CACHE_DIR}/hf"
 export HF_HUB_CACHE="${HF_HOME}/hub"
+# compute nodes have no route to huggingface.co; models are pre-downloaded on the login node
+export HF_HUB_OFFLINE=1
 mkdir -p "${HF_HUB_CACHE}"
 fold="${SLURM_ARRAY_TASK_ID:?Submit as an array job}"
 dir="${JEVAL_RUN_DIR}/fold-${fold}"

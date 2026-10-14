@@ -19,6 +19,8 @@ cd "${JEVAL_REPO_ROOT}"
 : "${JEVAL_CACHE_DIR:?Set JEVAL_CACHE_DIR to an absolute scratch/project cache path}"
 export HF_HOME="${JEVAL_CACHE_DIR}/hf"
 export HF_HUB_CACHE="${HF_HOME}/hub"
+# compute nodes have no route to huggingface.co; models are pre-downloaded on the login node
+export HF_HUB_OFFLINE=1
 mkdir -p "${HF_HUB_CACHE}"
 "${JEVAL_PYTHON}" -m jeval_v2.locomo select --segments "${JEVAL_RUN_DIR}/segments.jsonl" --candidates "${JEVAL_RUN_DIR}/candidates.jsonl" --scores "${JEVAL_RUN_DIR}"/fold-*/scores.jsonl --output-dir "${JEVAL_RUN_DIR}/selected" --ratio "${JEVAL_RATIO}" --seed "${JEVAL_SEED:-0}"
 "${JEVAL_PYTHON}" -m jeval_v2.generate qa --locomo "${JEVAL_LOCOMO}" --memories "${JEVAL_RUN_DIR}/selected/memories.jsonl" --output "${JEVAL_RUN_DIR}/predictions.jsonl" --model "${JEVAL_LLM}" --revision "${JEVAL_LLM_REVISION}" --seed "${JEVAL_SEED:-0}"
