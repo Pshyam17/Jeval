@@ -6,6 +6,8 @@
 #SBATCH --time=03:00:00
 #SBATCH --output=jeval-qa-%j.log
 set -euo pipefail
+# the venv python needs libpython from this module on compute nodes
+module load "${JEVAL_PYTHON_MODULE:-python/3.13.5}"
 : "${JEVAL_REPO_ROOT:?Set JEVAL_REPO_ROOT to the absolute repository root}"
 cd "${JEVAL_REPO_ROOT}"
 : "${JEVAL_PYTHON:?Set JEVAL_PYTHON to your venv Python executable}"
