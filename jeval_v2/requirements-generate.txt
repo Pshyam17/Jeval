@@ -1,0 +1,2 @@
+# vLLM (compress and QA only); install in the cluster environment, it pins its own torch
+vllm>=0.6
