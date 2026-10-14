@@ -112,6 +112,51 @@ Use one entry per hypothesis. **Result** must say whether it is a local syntheti
 
 **Takeaways →** Passing syntax and synthetic controls is only implementation verification. Update this entry with exact commands, hashes, dataset revision, seed files, and measured outputs after the first real run.
 
+## E11 — LoCoMo best-of-N: cosine versus EPE candidate selection (real-data run, 2026-10-14; exploratory, single seed)
+
+**Hypothesis →** With the same frozen compressor and the same pool of sampled compressions per segment, choosing the candidate with the lowest EPE yields better downstream LoCoMo answers than choosing the one with the lowest cosine distance, at matched length. This is a *selection* experiment. It is **not** E00 (score shown to the answer model) and **not** E06 (harm-label detection); both remain pending.
+
+**Setup and experiment →**
+- *Data.* Official `locomo10.json` (SHA-256 `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`), ten conversations. Cut into 1095 segments of 6 turns each (session date header and `[shared image: caption]` kept; longest segment 379 words, 479 encoder tokens, 0 over the 512 limit). QA: categories 1–4 only, **1540 questions**; category 5 (adversarial, no gold answer) skipped.
+- *Compressor.* `Qwen/Qwen2.5-7B-Instruct` @ `a09a35458c702b33eeacc393d103063234e8bc28`, vLLM 0.31.0, torch 2.13.0+cu129, one H200. One fixed prompt (sha256 `f4bec9f3…3f32`), target 0.5 of the original words, N=8 samples per segment, temperature 0.8, top-p 0.95, seed 0. 8760 candidates, none empty. The ratio, N, temperature and band tolerance were fixed before the run and not tuned afterwards.
+- *Scores.* Encoder `BAAI/bge-base-en-v1.5` @ `a5beb1e3e68b9ab74eb54cfd186867f64f240e1a`. Cosine is `1 − cos(original, candidate)`. EPE is the squared residual of the residual-MLP predictor (`C + MLP(C)`, hidden 1536) trained to predict the original embedding from the compressed one, label-free, checkpoint chosen by validation MSE, seed 0. 5-fold cross-fitting over whole conversations (6 train / 2 validation / 2 test); each conversation's candidates were scored by a predictor that never trained on that conversation, and the test folds cover all ten conversations exactly once.
+- *Selection arms.* Per segment, among candidates within ±25% of the word budget (whole pool if none, 149 segments): `cosine` (lowest distance), `epe` (lowest residual), `random` (seed 0), `first` (lowest candidate index), plus an uncompressed `original` memory as the reader's ceiling.
+- *Reader.* The same Qwen model, greedy decoding, the whole assembled memory in the prompt, short-phrase answers. Metric: token F1 following the LoCoMo conventions for categories 1 and 3, no stemming. Paired difference with a bootstrap over the ten conversations (1000 draws, seed 0).
+- *Jobs and files.* Slurm: compress 11071799 (16 min), folds 11071800 (array 0–4, 1.5–3 min each), QA 11071801 (6.5 min). Outputs under `/scratch/shyamsundar.p/runs/locomo-r50-s0/`: `segments.jsonl`, `candidates.jsonl` (+ metadata), `fold-*/scores.jsonl`, `selected/`, `predictions.jsonl`, `report.json`. Code at commit `0c07cb9` (the first launch, job 11071627, failed on an optional `torchcodec` import that needed CUDA 13 libraries; that package was removed and nothing else changed).
+
+**Result →** **Real-data measurement, one seed, exploratory; no locked test.**
+
+| Arm | Mean F1 | Words kept / original |
+|---|---|---|
+| original (uncompressed) | 0.3781 | 1.000 |
+| EPE | 0.3416 | 0.492 |
+| cosine | 0.3384 | 0.497 |
+| first | 0.3369 | 0.464 |
+| random | 0.3363 | 0.469 |
+
+F1 by category (1 / 2 / 3 / 4): original 0.286 / 0.149 / 0.151 / 0.522; EPE 0.287 / 0.168 / 0.138 / 0.450; cosine 0.279 / 0.154 / 0.125 / 0.453; first 0.271 / 0.162 / 0.115 / 0.451; random 0.295 / 0.158 / 0.125 / 0.442.
+
+Paired mean-F1 differences with 95% bootstrap intervals over the ten conversations:
+
+| Comparison | Difference | 95% interval |
+|---|---|---|
+| EPE − cosine | +0.0031 | [−0.0083, +0.0119] |
+| EPE − random | +0.0052 | [−0.0080, +0.0153] |
+| cosine − random | +0.0021 | [−0.0109, +0.0163] |
+| EPE − first | +0.0046 | [−0.0094, +0.0178] |
+
+Selection diagnostics: cosine and EPE picked the **same candidate for 82.4% of segments**, leaving about 190 segments where the arms differ. 149 of 1095 segments (13.6%) had no candidate in the length band and used the whole pool. The gap from the best compressed arm to the uncompressed memory is 0.037 F1 (EPE) and 0.040 (cosine).
+
+*Not measured or not yet read:* the predictor diagnostics (`mean_prediction_cosine_to_compressed` and `mean_absolute_epe_minus_identity` in each fold's `evaluate` output and the train logs) were not examined; harm labels do not exist, so no AUPRC/AUROC; no second or third training seed; no evidence-restricted analysis; no LLM judge; no correction for the four paired comparisons (none is individually significant).
+
+**Takeaways →**
+- **No detectable difference between EPE and cosine selection.** The point estimate favors EPE by 0.3 F1 points, but its interval contains zero, as do those of the comparisons with random and first. Per-category differences (EPE ahead by 1.4 points on categories 2 and 3, slightly behind on category 4) are post hoc, without intervals, and should not be read as findings.
+- **This is not evidence that the scores are equivalent.** The intervals rule out an EPE advantage much larger than about one F1 point on this setup, but the setup has low power: all four compressed arms lie within 0.6 points of each other, against a 3.7-point drop from the uncompressed memory, and selection recovered almost none of it.
+- **Dilution is the first suspect.** With 82% identical choices, only the remaining segments can move the two arms apart, and most questions do not depend on them. A test restricted to questions whose evidence lies in segments where the choices differ would be more sensitive, but would be post hoc and must be labelled secondary.
+- **Length control held for the central comparison** (EPE 0.492 vs cosine 0.497 words kept). `first` and `random` kept about three points less text, so their comparison with the scored arms leans slightly toward the scores; this does not affect EPE-versus-cosine.
+- **Protocol deviations to keep in view.** (1) The predictor was trained on LoCoMo's own conversations (cross-fitted, label-free, QA labels never used), which departs from the rule in the README and research log that LoCoMo must not train or select the predictor; the proposed independent MSC source was not used. A result from this setup cannot count as a locked benchmark result. (2) The compressor and the reader are the same model. (3) Token F1 is a noisy proxy.
+- **Pending follow-ups, none run:** read the predictor diagnostics; evidence-restricted analysis of differing segments; predictor seeds 0–2 with the existing aggregator; a harder setting (lower ratio, more and more varied candidates); an independent training source and LongMemEval for more independent groups.
+
 ## Result-entry template for future runs
 
 **Hypothesis →**

@@ -61,7 +61,7 @@ The proposed first surprisal arm is frozen-LM negative log likelihood of **omitt
 
 ### Cluster and reproducibility
 
-Example Slurm scripts require an explicit repository root, assigned account/partition at submission, and scratch/project model cache. Embedding requests one GPU; the small predictor uses a three-seed CPU array. `python -m compileall`, `bash -n`, `git diff --check`, direct synthetic gate checks, and direct seed aggregation checks passed in the local workspace. Full PyTorch/pytest suite did not run here because those packages were unavailable. No Explorer job has been submitted.
+Example Slurm scripts require an explicit repository root, assigned account/partition at submission, and scratch/project model cache. Embedding requests one GPU; the small predictor uses a three-seed CPU array. `python -m compileall`, `bash -n`, `git diff --check`, direct synthetic gate checks, and direct seed aggregation checks passed in the local workspace. Full PyTorch/pytest suite did not run here because those packages were unavailable. *(Update 2026-10-14: Explorer jobs have since run for the LoCoMo best-of-N study; see E11 and the chronology below. The CPU seed array described here has not been run.)*
 
 ## Outstanding decisions before a benchmark result
 
@@ -78,3 +78,9 @@ Example Slurm scripts require an explicit repository root, assigned account/part
 3. Added a label-free ridge reconstruction gate, then corrected its deciding comparison from identity-to-matrix to **intercept-to-matrix** after an audit found the first statistic rewarded a constant shift.
 4. Required explicit encoder revision; added grouped metrics, paired bootstrap, a separately supervised logistic comparison, MSE headline selection, explicit AUPRC ablation, CPU seed array, and cross-seed aggregator.
 5. Chose LongMemEval-S cleaned as the proposed primary stale-state evaluation and LoCoMo as secondary. Added benchmark manifest adapters and this log. No corpus, compressor run, model training, real benchmark labels, or QA evaluation has occurred.
+
+## Chronology of the LoCoMo best-of-N study (2026-10-14 PT)
+
+6. Added `locomo.py` (segments, conversation folds, candidate pairs, length-banded selection, QA scoring and paired report), `generate.py` (vLLM compression and QA), Slurm scripts, a GPU watcher, and tests (commits `4a285c7`, `c8d7ab6`, `ef51eda`, `0c07cb9`). The aim was a fair comparison where one frozen compressor produces the same candidates and only the selection rule (cosine versus EPE) differs.
+7. Cluster bring-up on Explorer took most of the effort. The first environment installed torch built for CUDA 13, but the GPU nodes' drivers support only CUDA 12.x (545 on one node, 570 on the H200), so torch could not see the GPU. Rebuilt with the CUDA 12.9 vLLM and torch wheels and verified `torch.cuda.is_available()` on an H200. Installing into scratch is slow, so long installs run as batch jobs with `--no-compile`. The first compress run failed on an optional `torchcodec` import needing CUDA 13 libraries; removing it fixed the import.
+8. Ran the full chain once (E11): no detectable EPE-versus-cosine difference in answer F1 (+0.003, interval [−0.008, +0.012]); selection recovered almost none of the 3.7-point loss against uncompressed memory; the two rules picked the same candidate for 82% of segments. The run is exploratory, single-seed, and trained the predictor on LoCoMo conversations, which departs from the independent-training-source rule above, so it is not a locked benchmark result. The headline experiment E00 (risk percentile shown to the answer model) and the harm-detection comparison E06 are still pending.
